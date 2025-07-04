@@ -1,0 +1,23 @@
+# Node.js
+node_modules/
+dist/
+*.log
+
+# dotenv
+.env
+
+# SQLite (if used)
+*.sqlite
+*.sqlite-journal
+
+# TypeScript
+*.tsbuildinfo
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Editor settings
+.vscode/
+.idea/
+
