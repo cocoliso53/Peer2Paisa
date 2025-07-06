@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "dotenv": "^17.0.1",
+    "telegraf": "^4.16.3",
     "viem": "^2.31.7"
   }
 }
