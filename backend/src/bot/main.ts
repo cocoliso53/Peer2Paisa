@@ -1,21 +1,21 @@
 import dotenv from 'dotenv'
 import path from 'path'
-import { text } from 'stream/consumers';
-
 dotenv.config({
   path: path.resolve(__dirname, '../../.env'),
 })
-
-import { Telegraf, Markup, session } from "telegraf";
+import { Telegraf, Markup } from "telegraf";
+import { createHash, randomUUID } from 'crypto';
 
 type Order = {
     buyer?: {
         username: string,
         address?: string,
+        chatId?: number
     },
     seller?: {
         username: string,
-        address?: string
+        address?: string,
+        chatId?: number,
     }, 
     orderId: string,
     step: 'created' | 'amountSet' | 'addressSet' | 'watingCounterpart' | 'taken' | 'funded' | 'released' | 'dispute' | 'done' // step in progress
@@ -25,12 +25,16 @@ type Order = {
     lastMessageId?: number
 }
 
+const helperCreateHash = (): string => {
+    const uuid = randomUUID().toString()
+    return createHash('md5').update(uuid, 'utf8').digest('base64url')
+}
+
 // Temp storage
 let users: string[] = []
 let orders: Order[] = []
 const bot = new Telegraf(process.env.TELEGRAM_BOT!);
 
-bot.use(session())
 
 bot.start((ctx) => {
     if (ctx.from.username) {
@@ -78,7 +82,7 @@ bot.action(/^(sell|buy)$/, async ctx => {
   const m = await ctx.reply(`Enter amount to ${action} in MXN`);
 
   let order:Order = {
-    orderId: crypto.randomUUID().toString(),
+    orderId: helperCreateHash(),
     step: 'amountSet',
     status: 'active',
     lastMessageId: m.message_id,
@@ -90,6 +94,7 @@ bot.action(/^(sell|buy)$/, async ctx => {
         ...order,
         seller: {
             username: ctx.from.username!,
+
         }
     }
   } else if (action === 'buy') {
@@ -108,7 +113,6 @@ bot.action(/^(sell|buy)$/, async ctx => {
 bot.on('text', async ctx => {
     
     const username = ctx.from.username!
-    console.log("username acá", username)
     const activeOrder = orders.find(o =>
         (o.buyer?.username === username ||
         o.seller?.username === username ) &&
@@ -145,49 +149,94 @@ bot.on('text', async ctx => {
         const amount = activeOrder?.amount
         const orderText = orderType === 'sell' ? `Selling ${amount} MXNB` : `Buying ${amount} MXNB`
         await ctx.telegram.deleteMessage(ctx.chat.id, lastMessageId!)
-        const m2 = await ctx.reply(`Order created ${orderId}`)
+        const m2 = await ctx.reply(`Order created ${orderId}`,)
 
         
-        ctx.telegram.sendMessage(-1002641616927,orderText)
+        ctx.telegram.sendMessage(
+            -1002641616927,
+            orderText,
+        {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: "Take Order", callback_data: `take:${orderId}`}
+                    ]
+                ]
+            }
+        })
 
-        if (orderType === 'sell') {
-            const updateOrders = orders.map(o => 
-                o.orderId === orderId ? {
-                    ...o,
-                    step: "watingCounterpart" as Order["step"],
-                    lastMessageId: m2.message_id,
-                    seller: {
-                        username: ctx.from.username!,
-                        address: ctx.message.text
-                    }
-                } : o
-            )
-
-            orders = updateOrders
-        } else {
-            const updateOrders = orders.map(o => 
-                o.orderId === orderId ? {
-                    ...o,
-                    step: "watingCounterpart" as Order["step"],
-                    lastMessageId: m2.message_id,
-                    buyer: {
-                        username: ctx.from.username!,
-                        address: ctx.message.text
-                    }
-                } : o
-            )
-
-            orders = updateOrders
+        const user = {
+            username: ctx.from.username!, 
+            address:  ctx.message.text,
+            chatId: ctx.from.id
         }
+
+        orders = orders.map((o): Order =>
+            o.orderId !== orderId 
+                ? o
+                : {
+                    ...o,
+                    step:"watingCounterpart",
+                    lastMessageId: m2.message_id,
+                    ...(orderType === "sell"
+                        ? { seller: user }
+                        : { buyer:  user }),
+                }
+        )
+    } else if (activeOrder!.step === 'taken') {
+        console.log("texto (address)?", ctx.message.text)
+        await ctx.reply("Ok")
     }
 
 
 
 })
 
-bot.on('channel_post', ctx => {
-  console.log('Channel ID:', ctx.channelPost.chat.id);
-});
+bot.action(/^take:(.+)$/, async ctx => {
+    const id = ctx.match[1];
+    console.log("el id", id)
+
+    const order = orders.find(o => o.orderId === id)
+    const orderId = order?.orderId
+    const orderType = order?.type
+
+    const orderMakerChatId = orderType === "sell" ? order?.seller?.chatId! : order?.buyer?.chatId!
+    const takerMessage = orderType === "sell" ? "Place enter the wallet where you want to receive MXNB" : "Enter address for refund (if necessary)"
+
+    const counterpart = {
+        username: ctx.from.username!,
+        chatId: ctx.from.id
+    }
+
+
+    orders = orders.map((o): Order =>
+            o.orderId !== orderId 
+                ? o
+                : {
+                    ...o,
+                    step: "taken",
+                    ...(orderType === "sell"
+                        ? { buyer: counterpart }
+                        : { seller:  counterpart }),
+                }
+    )
+
+    await ctx.answerCbQuery();
+
+    await ctx.deleteMessage();
+
+    await ctx.telegram.sendMessage(
+        orderMakerChatId,
+        `Order #${id} has been taken. Waiting for the counter part to set their address`
+    )
+
+
+    await ctx.telegram.sendMessage(
+        ctx.from.id,
+        takerMessage
+    );
+})
+
 
 
 bot.launch()
