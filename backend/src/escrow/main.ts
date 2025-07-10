@@ -5,7 +5,7 @@ dotenv.config({
   path: path.resolve(__dirname, '../../.env'),
 })
 
-import { createPublicClient, createWalletClient, http, parseEventLogs, parseUnits } from 'viem'
+import { createPublicClient, createWalletClient, http, parseEventLogs } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { arbitrumSepolia} from 'viem/chains'
 import { SimpleEscrowAbi } from './abi/SimpleEscrow'
@@ -16,7 +16,6 @@ const alchemyURL = process.env.ALCHEMY_URL
 const factoryAddress = process.env.FACTORY_ADDRESS
 
 const account = privateKeyToAccount(privateKey as `0x${string}`)
-console.log("address", account)
 
 const publicClient = createPublicClient({
     chain: arbitrumSepolia,
@@ -49,7 +48,7 @@ const checkAmount = async (escrowAddress: string) => {
     console.log("amount", amount)
 }
 
-const markAsFunded = async (escrowAddress: string) => {
+export const markAsFunded = async (escrowAddress: string) => {
     const txHash = await walletClient.writeContract({
         address: escrowAddress as `0x${string}`,
         abi: SimpleEscrowAbi,
@@ -57,17 +56,21 @@ const markAsFunded = async (escrowAddress: string) => {
     })
 
     console.log("txHash", txHash)
+    return txHash
 }
 
-const confirmFiatReceived = async (escrowAddress: string) => {
+export const confirmFiatReceived = async (escrowAddress: string) => {
     const txHash = await walletClient.writeContract({
         address: escrowAddress as `0x${string}`,
         abi: SimpleEscrowAbi,
         functionName: 'confirmFiatReceived'
     })
+
+    console.log("txHash confirmedFiatReceived", txHash)
+    return txHash
 }
 
-const refundSeller = async (escrowAddress: string) => {
+export const refundSeller = async (escrowAddress: string) => {
     const txHash = await walletClient.writeContract({
         address: escrowAddress as `0x${string}`,
         abi: SimpleEscrowAbi,
@@ -77,7 +80,7 @@ const refundSeller = async (escrowAddress: string) => {
     console.log("txHash", txHash)
 }
 
-const createEscrow = async (seller: string, buyer: string, amount: bigint) => {
+export const createEscrow = async (seller: string, buyer: string, amount: bigint) => {
     
     const txHash = await walletClient.writeContract({
         address: factoryAddress as `0x${string}`,
@@ -105,12 +108,13 @@ const createEscrow = async (seller: string, buyer: string, amount: bigint) => {
 }
 
 
-
+/*
 (async () => {
     console.log("acá")
     //await createEscrow("0x5fcaf1bc20f902cCeEd5bA5Ca2f651da684eca5b", "0xD64F77C974bC81fB80BC52B72Ef2a98398745521", parseUnits("10",6))
     //await checkIsFunded("0xD835eed156EA06Cfe8728c6a81E7aE87E490719E")
     //await checkAmount("0xD835eed156EA06Cfe8728c6a81E7aE87E490719E")
-    await refundSeller("0xD835eed156EA06Cfe8728c6a81E7aE87E490719E")
+    await refundSeller("0x7d8C53Ee7c4Db429668fc942B452D2c93e0d37c2")
     //await confirmFiatReceived("0xcbd023BEdf797f8057FbFD0f9ca87b567C31164A")
 })()
+    */
