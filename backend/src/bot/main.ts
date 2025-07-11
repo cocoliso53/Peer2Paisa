@@ -6,7 +6,8 @@ dotenv.config({
 import { Telegraf, Markup } from "telegraf";
 import { createHash, randomUUID } from 'crypto';
 import { isAddress } from 'viem';
-import { confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot } from '../utils/botSmartContractAdapter';
+import { checkAmountFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot, refundSellerFromBot } from '../utils/botSmartContractAdapter';
+import { refundSeller } from '../escrow/main';
 
 type Order = {
     buyer?: {
@@ -20,12 +21,13 @@ type Order = {
         chatId?: number,
     }, 
     orderId: string,
-    step: 'created' | 'amountSet' | 'addressSet' | 'watingCounterpart' | 'taken' | 'waitingFunding' | 'funded' | 'released' | 'dispute' | 'done' // step in progress
+    step: 'amountSet' | 'addressSet' | 'watingCounterpart' | 'taken' | 'waitingFunding' | 'funded' | 'dispute' | 'done' | 'canceled'
     status: 'active' | 'done'
     type: string
     amount?: string
     lastMessageId?: number,
     escrowAddress?: string
+    orderMessageId?: number
 }
 
 const explorerBaseURL = "https://sepolia.arbiscan.io"
@@ -37,8 +39,10 @@ const helperCreateHash = (): string => {
 // Temp storage
 let users: string[] = []
 let orders: Order[] = []
+const channelId = process.env.TELEGRAM_CHANNEL
 const bot = new Telegraf(process.env.TELEGRAM_BOT!);
 
+console.log("TELEGRAM_CHANNEL",channelId)
 
 bot.start((ctx) => {
     if (ctx.from.username) {
@@ -207,6 +211,116 @@ bot.command('release', async ctx => {
 
 })
 
+bot.command('cancel', async ctx => {
+    const username = ctx.from.username!
+    const activeOrder = orders.find(o =>
+        (o.buyer?.username === username ||
+        o.seller?.username === username ) &&
+        o.status === 'active'
+    )
+    const orderId = activeOrder?.orderId
+
+    if(!activeOrder) {
+        ctx.reply("You have no active orders")
+    }
+
+
+    if (activeOrder && (
+        activeOrder.step === 'addressSet' ||
+        activeOrder.step === 'amountSet' ||
+        activeOrder.step === 'watingCounterpart')) {
+
+            orders = orders.map((o): Order =>
+                o.orderId !== orderId 
+                   ? o
+                   : {
+                    ...o,
+                    step: 'canceled',
+                    status: 'done'
+                }
+            )
+            
+            await ctx.reply("Order canceled succesfully")
+            const orderMessageId = activeOrder.orderMessageId
+            if (orderMessageId) {
+                await ctx.telegram.deleteMessage(
+                    -1002641616927,
+                    orderMessageId
+                )
+            }
+        } else 
+        
+        if (activeOrder?.seller?.username === username) {
+            switch (activeOrder.step) {
+
+                case 'taken':
+                case 'waitingFunding':
+                    orders = orders.map((o): Order =>
+                    o.orderId !== orderId 
+                        ? o
+                        : {
+                            ...o,
+                            step: 'canceled',
+                            status: 'done'
+                        }
+                    )
+
+                    await ctx.reply("Order canceled succesfully")
+                    await ctx.telegram.sendMessage(activeOrder.buyer?.chatId!, "Seller canceled the order")
+                    break
+                    
+                case 'funded':
+                    await ctx.reply("Only buyer can initiate order cancelation right now")
+                    break
+                    
+                default:
+                    await ctx.reply("Can't cancel order at current stage")
+
+            }
+        } else 
+
+        if (activeOrder?.buyer?.username === username) {
+            switch (activeOrder.step) {
+
+                case 'taken':
+                case 'waitingFunding':
+                case 'funded':
+                    orders = orders.map((o): Order =>
+                    o.orderId !== orderId 
+                        ? o
+                        : {
+                            ...o,
+                            step: 'canceled',
+                            status: 'done'
+                        }
+                    )
+
+                    await ctx.reply("Order canceled succesfully")
+                    await ctx.telegram.sendMessage(activeOrder.buyer?.chatId!, "Buyer canceled the order")
+
+                    const escrowAddress = activeOrder.escrowAddress
+                    const amount = escrowAddress ? await checkAmountFromBot(escrowAddress) : null
+                    if (amount && amount > 0) {
+                        await markAsFundedFromBot(escrowAddress!)
+                        // It would be better to wait for receipt once tx is confirmed
+                        await new Promise(resolve => setTimeout(resolve, 5000));
+                        const txHashRefund = await refundSellerFromBot(escrowAddress!)
+                        const nextMessage = txHashRefund ? `Funds have been returned on tx ${txHashRefund}` : `Something went wrong, please contact support`
+                        ctx.telegram.sendMessage(activeOrder.seller?.chatId!, nextMessage)
+                        ctx.telegram.sendMessage(activeOrder.buyer.chatId!, "Order canceled")
+                    }
+                    
+                    break
+                    
+                    
+                default:
+                    await ctx.reply("Can't cancel order at current stage")
+                    
+            }
+        }
+    }
+)
+
 bot.on('text', async ctx => {
     
     const username = ctx.from.username!
@@ -253,7 +367,7 @@ bot.on('text', async ctx => {
             const m2 = await ctx.reply(`Order created ${orderId}`,)
 
             
-            ctx.telegram.sendMessage(
+            const orderMessage = await ctx.telegram.sendMessage(
                 -1002641616927,
                 orderText,
             {
@@ -277,7 +391,8 @@ bot.on('text', async ctx => {
                     ? o
                     : {
                         ...o,
-                        step:"watingCounterpart",
+                        step: 'watingCounterpart',
+                        orderMessageId: orderMessage.message_id,
                         lastMessageId: m2.message_id,
                         ...(orderType === "sell"
                             ? { seller: user }

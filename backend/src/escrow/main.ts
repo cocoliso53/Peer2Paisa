@@ -5,9 +5,9 @@ dotenv.config({
   path: path.resolve(__dirname, '../../.env'),
 })
 
-import { createPublicClient, createWalletClient, http, parseEventLogs } from 'viem'
+import { createPublicClient, createWalletClient, http, parseUnits, parseEventLogs } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { arbitrumSepolia} from 'viem/chains'
+import { arbitrum} from 'viem/chains'
 import { SimpleEscrowAbi } from './abi/SimpleEscrow'
 import { EscrowFacotryAbi } from './abi/EscrowFactory'
 
@@ -18,12 +18,12 @@ const factoryAddress = process.env.FACTORY_ADDRESS
 const account = privateKeyToAccount(privateKey as `0x${string}`)
 
 const publicClient = createPublicClient({
-    chain: arbitrumSepolia,
+    chain: arbitrum,
     transport: http(alchemyURL)
 })
 
 const walletClient = createWalletClient({
-    chain: arbitrumSepolia,
+    chain: arbitrum,
     transport: http(alchemyURL),
     account
 })
@@ -38,7 +38,7 @@ const checkIsFunded = async (escrowAddress: string) => {
     console.log("isFunded", isFunded)
 }
 
-const checkAmount = async (escrowAddress: string) => {
+export const checkAmount = async (escrowAddress: string) => {
     const amount = await publicClient.readContract({
         address: escrowAddress as `0x${string}`,
         abi: SimpleEscrowAbi,
@@ -46,6 +46,7 @@ const checkAmount = async (escrowAddress: string) => {
     })
 
     console.log("amount", amount)
+    return amount
 }
 
 export const markAsFunded = async (escrowAddress: string) => {
@@ -114,7 +115,7 @@ export const createEscrow = async (seller: string, buyer: string, amount: bigint
     //await createEscrow("0x5fcaf1bc20f902cCeEd5bA5Ca2f651da684eca5b", "0xD64F77C974bC81fB80BC52B72Ef2a98398745521", parseUnits("10",6))
     //await checkIsFunded("0xD835eed156EA06Cfe8728c6a81E7aE87E490719E")
     //await checkAmount("0xD835eed156EA06Cfe8728c6a81E7aE87E490719E")
-    await refundSeller("0x7d8C53Ee7c4Db429668fc942B452D2c93e0d37c2")
-    //await confirmFiatReceived("0xcbd023BEdf797f8057FbFD0f9ca87b567C31164A")
+    //await markAsFunded("0x3efbd2D9926A8F1e82Cbc86345d4A17A7bf04012")
+    await confirmFiatReceived("0x3efbd2D9926A8F1e82Cbc86345d4A17A7bf04012")
 })()
-    */
+*/
