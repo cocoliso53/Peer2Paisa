@@ -30,7 +30,7 @@ type Order = {
     orderMessageId?: number
 }
 
-const explorerBaseURL = "https://sepolia.arbiscan.io"
+const explorerBaseURL = "https://arbiscan.io"
 const helperCreateHash = (): string => {
     const uuid = randomUUID().toString()
     return createHash('md5').update(uuid, 'utf8').digest('base64url')
@@ -280,7 +280,8 @@ bot.command('cancel', async ctx => {
                         // It would be better to wait for receipt once tx is confirmed
                         await new Promise(resolve => setTimeout(resolve, 5000));
                         const txHashRefund = await refundSellerFromBot(escrowAddress!)
-                        const nextMessage = txHashRefund ? `Funds have been returned on tx ${txHashRefund}` : `Something went wrong, please contact support`
+                        const explorerUrl = explorerBaseURL + `/tx/${txHashRefund}`
+                        const nextMessage = txHashRefund ? `Funds have been returned on tx ${explorerUrl}` : `Something went wrong, please contact support`
                         ctx.telegram.sendMessage(activeOrder.seller?.chatId!, nextMessage)
                         ctx.telegram.sendMessage(activeOrder.buyer.chatId!, "Order canceled")
                     }
@@ -458,6 +459,7 @@ bot.action(/^(MXNB|USDT)/, async ctx => {
     await ctx.deleteMessage();
 
     const txHash = token === "MXNB" ? await confirmFiatReceivedFromBot(escrow) : await swapAndSendFromBot(escrow)
+    const explorerUrl = explorerBaseURL + `/tx/${txHash}`
 
     if (txHash) {
         await ctx.telegram.sendMessage(
@@ -466,7 +468,7 @@ bot.action(/^(MXNB|USDT)/, async ctx => {
         )
         await ctx.telegram.sendMessage(
             buyerChatId,
-            `txHash: ${txHash}`
+            `txHash: ${explorerUrl}`
         )
         await ctx.telegram.sendMessage(
             buyerChatId,
