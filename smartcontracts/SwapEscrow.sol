@@ -13,7 +13,7 @@ contract SwapEscrow {
     bool    public isReleased;
     address public bot;
 
-    // MXNB token on testnet
+    // MXNB token on mainnet
     address public constant token = 0xF197FFC28c23E0309B5559e7a166f2c6164C80aA;
 
     // Uniswap V3 SwapRouter
