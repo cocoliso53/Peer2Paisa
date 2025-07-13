@@ -133,6 +133,8 @@ bot.command('funded', async ctx => {
 
     const txHash = await markAsFundedFromBot(escrow)
 
+    
+
     if (txHash) {
         await ctx.telegram.sendMessage(
             sellerChatId,
@@ -444,7 +446,7 @@ bot.action(/^(MXNB|USDT)/, async ctx => {
     const token = ctx.match[0]
     const username = ctx.from.username!
     const activeOrder = orders.find(o =>
-        o.seller?.username === username &&
+        o.buyer?.username === username &&
         o.status === 'active' &&
         o.step === 'funded'
     )
