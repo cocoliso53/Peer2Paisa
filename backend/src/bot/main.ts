@@ -171,10 +171,7 @@ bot.command('release', async ctx => {
         o.step === 'funded'
     )
 
-    const orderId = activeOrder?.orderId
-    const escrow = activeOrder?.escrowAddress!
     const buyerChatId = activeOrder?.buyer?.chatId!
-    const sellerChatId = activeOrder?.seller?.chatId!
 
     await ctx.telegram.sendMessage(
         buyerChatId, 
@@ -185,6 +182,10 @@ bot.command('release', async ctx => {
         )
     )
 
+})
+
+bot.command('help', async ctx => {
+    await ctx.reply("Please contact @cuaucortes for assistance")
 })
 
 bot.command('cancel', async ctx => {
