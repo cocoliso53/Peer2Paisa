@@ -6,7 +6,7 @@ dotenv.config({
 import { Telegraf, Markup } from "telegraf";
 import { createHash, randomUUID } from 'crypto';
 import { isAddress } from 'viem';
-import { checkAmountFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot, refundSellerFromBot } from '../utils/botSmartContractAdapter';
+import { checkAmountFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot, refundSellerFromBot, swapAndSendFromBot } from '../utils/botSmartContractAdapter';
 import { refundSeller } from '../escrow/main';
 
 type Order = {
@@ -176,38 +176,14 @@ bot.command('release', async ctx => {
     const buyerChatId = activeOrder?.buyer?.chatId!
     const sellerChatId = activeOrder?.seller?.chatId!
 
-    const txHash = await confirmFiatReceivedFromBot(escrow)
-
-    if (txHash) {
-        await ctx.telegram.sendMessage(
-            sellerChatId,
-            "Transaction finished succesfully. Thanks for using our bot!"
+    await ctx.telegram.sendMessage(
+        buyerChatId, 
+        "You want to receive MXNB or USDT", 
+        Markup.inlineKeyboard([
+                [ Markup.button.callback('MXNB', 'MXNB'), Markup.button.callback('USDT', 'USDT') ]
+            ]
         )
-        await ctx.telegram.sendMessage(
-            buyerChatId,
-            "Transaction finished succesfully. Thanks for using our bot!"
-        )
-
-        orders = orders.map((o): Order =>
-                o.orderId !== orderId 
-                    ? o
-                    : {
-                        ...o,
-                        step: 'done',
-                        status: 'done'
-                        }
-            )
-    } else {
-        await ctx.telegram.sendMessage(
-            sellerChatId,
-            "There was an error releasing the funds. Please try again or contact support"
-        )
-        await ctx.telegram.sendMessage(
-            buyerChatId,
-            "There was an error releasing the funds. Wait for the seller to release again or contact support"
-        )
-    }
-
+    )
 
 })
 
@@ -464,6 +440,60 @@ bot.on('text', async ctx => {
     }
 })
 
+bot.action(/^(MXNB|USDT)/, async ctx => {
+    const token = ctx.match[0]
+    const username = ctx.from.username!
+    const activeOrder = orders.find(o =>
+        o.seller?.username === username &&
+        o.status === 'active' &&
+        o.step === 'funded'
+    )
+
+    const orderId = activeOrder?.orderId
+    const escrow = activeOrder?.escrowAddress!
+    const buyerChatId = activeOrder?.buyer?.chatId!
+    const sellerChatId = activeOrder?.seller?.chatId!
+
+    await ctx.answerCbQuery();
+
+    await ctx.deleteMessage();
+
+    const txHash = token === "MXNB" ? await confirmFiatReceivedFromBot(escrow) : await swapAndSendFromBot(escrow)
+
+    if (txHash) {
+        await ctx.telegram.sendMessage(
+            sellerChatId,
+            "Transaction finished succesfully. Thanks for using our bot!"
+        )
+        await ctx.telegram.sendMessage(
+            buyerChatId,
+            `txHash: ${txHash}`
+        )
+        await ctx.telegram.sendMessage(
+            buyerChatId,
+            "Transaction finished succesfully. Thanks for using our bot!"
+        )
+
+        orders = orders.map((o): Order =>
+                o.orderId !== orderId 
+                    ? o
+                    : {
+                        ...o,
+                        step: 'done',
+                        status: 'done'
+                        }
+            )
+    } else {
+        await ctx.telegram.sendMessage(
+            sellerChatId,
+            "There was an error releasing the funds. Please try again or contact support"
+        )
+        await ctx.telegram.sendMessage(
+            buyerChatId,
+            "There was an error releasing the funds. Wait for the seller to release again or contact support"
+        )
+    }
+}) 
 
 bot.action(/^take:(.+)$/, async ctx => {
     const id = ctx.match[1];
