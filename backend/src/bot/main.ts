@@ -39,10 +39,9 @@ const helperCreateHash = (): string => {
 // Temp storage
 let users: string[] = []
 let orders: Order[] = []
-const channelId = process.env.TELEGRAM_CHANNEL
+const channelId = Number(process.env.TELEGRAM_CHANNEL)
 const bot = new Telegraf(process.env.TELEGRAM_BOT!);
 
-console.log("TELEGRAM_CHANNEL",channelId)
 
 bot.start((ctx) => {
     if (ctx.from.username) {
@@ -77,7 +76,6 @@ bot.command('create', ctx => {
             ])
         )
     }
-    // ctx.telegram.sendMessage(-1002641616927,"Se creó una orden")
 })
 
 bot.action(/^(sell|buy)$/, async ctx => {
@@ -221,7 +219,7 @@ bot.command('cancel', async ctx => {
             const orderMessageId = activeOrder.orderMessageId
             if (orderMessageId) {
                 await ctx.telegram.deleteMessage(
-                    -1002641616927,
+                    channelId,
                     orderMessageId
                 )
             }
@@ -345,7 +343,7 @@ bot.on('text', async ctx => {
 
             
             const orderMessage = await ctx.telegram.sendMessage(
-                -1002641616927,
+                channelId,
                 orderText,
             {
                 reply_markup: {
