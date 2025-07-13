@@ -22,3 +22,18 @@ sudo apt install -y nodejs npm
 navigate to `{your_root_folder}/Peer2Paisa/backend`
 
 and then run `npm install`
+
+### 2 run the bot!
+
+run `npx ts-node ./src/bot/main.ts`
+
+or do 
+
+```
+cd src/
+cd bot/
+
+npx ts-node main.ts
+```
+
+That should start the bot, now you can use it on telegram!
