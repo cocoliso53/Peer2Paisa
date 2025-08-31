@@ -13,12 +13,14 @@ type Order = {
     buyer?: {
         username: string,
         address?: string,
-        chatId?: number
+        chatId?: number,
+        canceled?: boolean,
     },
     seller?: {
         username: string,
         address?: string,
         chatId?: number,
+        canceled?: boolean,
     }, 
     orderId: string,
     step: 'amountSet' | 'addressSet' | 'watingCounterpart' | 'taken' | 'waitingFunding' | 'funded' | 'dispute' | 'done' | 'canceled' | 'defineAmount'
@@ -29,6 +31,7 @@ type Order = {
     escrowAddress?: string,
     orderMessageId?: number,
     range?: boolean,
+    createdAt?: string,
 }
 
 const explorerBaseURL = "https://basescan.org/"
@@ -90,7 +93,7 @@ bot.action(/^(sell|buy)$/, async ctx => {
   await ctx.answerCbQuery();
   await ctx.deleteMessage();
 
-  const m = await ctx.reply(`Enter exact amount or range (like 100-1000) to ${action} in XOC`);
+  const m = await ctx.reply(`Enter exact amount or range (eg. 100-1000) to ${action} in XOC`);
 
   let order:Order = {
     orderId: helperCreateHash(),
@@ -183,16 +186,21 @@ bot.command('release', async ctx => {
     const sellerChatId = activeOrder?.seller?.chatId!
 
     const txHash = await confirmFiatReceivedFromBot(escrow)
+    const explorerUrl = explorerBaseURL + `tx/${txHash}`
+    const successMEssage = `Transaction [completed](${explorerUrl})! Thanks for using our bot!`
 
     if (txHash) {
         await ctx.telegram.sendMessage(
             sellerChatId,
-            "Transaction finished succesfully. Thanks for using our bot!"
+            successMEssage,
+            { parse_mode: 'Markdown' }
         )
         await ctx.telegram.sendMessage(
             buyerChatId,
-            "Transaction finished succesfully. Thanks for using our bot!"
+            successMEssage,
+            { parse_mode: 'Markdown' }
         )
+        
 
         orders = orders.map((o): Order =>
                 o.orderId !== orderId 
@@ -478,13 +486,13 @@ bot.on('text', async ctx => {
 
             await ctx.telegram.sendMessage(
                 updatedOrder?.buyer?.chatId!,
-                `Escrow created, click [here](${escrowURL}) to see the details. Wating for seller to send funds to escrow account`,
+                `Escrow created, click [here](${escrowURL}) to see the details. Wating for seller to fund escrow contract`,
                 { parse_mode: 'Markdown' }
             )
 
             await ctx.telegram.sendMessage(
                 updatedOrder?.seller?.chatId!,
-                `Escrow created, click [here](${escrowURL}) to see the details. Deposit ${updatedOrder?.amount!} XOC and send /funded to the escrow address`,
+                `Escrow created, click [here](${escrowURL}) to see the details. Deposit ${updatedOrder?.amount!} XOC and then type /funded to continue`,
                 { parse_mode: 'Markdown' }
             )
 
