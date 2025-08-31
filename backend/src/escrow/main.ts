@@ -7,9 +7,9 @@ dotenv.config({
 
 import { createPublicClient, createWalletClient, http, parseUnits, parseEventLogs, Address } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { arbitrum} from 'viem/chains'
+import { arbitrum, base} from 'viem/chains'
 import { SimpleEscrowAbi } from './abi/SimpleEscrow'
-import { EscrowFacotryAbi } from './abi/EscrowFactory'
+import { EscrowFactoryAbi } from './abi/EscrowFactory'
 import { SwapEscrowAbi } from './abi/SwapEscrowAbi'
 import { QuoterAbi } from './abi/QuoterAbi'
 
@@ -18,16 +18,19 @@ const alchemyURL = process.env.ALCHEMY_URL
 const factoryAddress = process.env.FACTORY_ADDRESS
 const QUOTER_ADDR = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6" as Address
 const SLIPPAGE_BPS  = 50
+const selectedChain = base // or arbitrum
+const tokenAddress = "0xa411c9Aa00E020e4f88Bc19996d29c5B7ADB4ACf" // Hardcoded XOC address
+
 
 const account = privateKeyToAccount(privateKey as `0x${string}`)
 
 const publicClient = createPublicClient({
-    chain: arbitrum,
+    chain: selectedChain,
     transport: http(alchemyURL)
 })
 
 const walletClient = createWalletClient({
-    chain: arbitrum,
+    chain: selectedChain,
     transport: http(alchemyURL),
     account
 })
@@ -89,9 +92,9 @@ export const createEscrow = async (seller: string, buyer: string, amount: bigint
     
     const txHash = await walletClient.writeContract({
         address: factoryAddress as `0x${string}`,
-        abi: EscrowFacotryAbi,
+        abi: EscrowFactoryAbi,
         functionName: 'createEscrow',
-        args: [seller as `0x${string}`, buyer as `0x${string}`, amount]
+        args: [seller as `0x${string}`, buyer as `0x${string}`, amount, tokenAddress as `0x${string}`]
     })
 
     console.log("Escrow creado", txHash)
@@ -101,7 +104,7 @@ export const createEscrow = async (seller: string, buyer: string, amount: bigint
     })
 
     const logs = parseEventLogs({
-        abi: EscrowFacotryAbi,
+        abi: EscrowFactoryAbi,
         eventName: 'EscrowCreated',
         logs: receipt.logs,
     })
@@ -159,15 +162,15 @@ export const swapEscrow = async (
 
 
 
-/*
+
 (async () => {
     console.log("acá")
     //await createEscrow("0x5fcaf1bc20f902cCeEd5bA5Ca2f651da684eca5b", "0xD64F77C974bC81fB80BC52B72Ef2a98398745521", parseUnits("10",6))
     //await checkIsFunded("0xf70268Cf6684FA9e016d1bDE436441BB8aAEf1B0")
-    await checkAmount("0x2fbd4931232C3456c68269c6516800884A08180d")
-    //await refundSeller("0xf70268Cf6684FA9e016d1bDE436441BB8aAEf1B0")
-    //await markAsFunded("0x2fbd4931232C3456c68269c6516800884A08180d")
-    await swapEscrow("0x2fbd4931232C3456c68269c6516800884A08180d", "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9")
-    //await confirmFiatReceived("0x3efbd2D9926A8F1e82Cbc86345d4A17A7bf04012")
+    //await checkAmount("0x09579E61a95792Be2440fe2Da011eC47FBfc9861")
+    //await refundSeller("0x811793327fF37d8C74352eD16ebEa6815930c065")
+    //await markAsFunded("0x12F2A0D7b1a04A51268546fb46B4a92a5E0fc546")
+    //await swapEscrow("0x2fbd4931232C3456c68269c6516800884A08180d", "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9")
+    //await confirmFiatReceived("0x09579E61a95792Be2440fe2Da011eC47FBfc9861")
 })()
-    */
+

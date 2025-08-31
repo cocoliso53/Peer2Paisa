@@ -6,7 +6,7 @@ dotenv.config({
 import { Telegraf, Markup } from "telegraf";
 import { createHash, randomUUID } from 'crypto';
 import { isAddress } from 'viem';
-import { checkAmountFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot, refundSellerFromBot, swapAndSendFromBot } from '../utils/botSmartContractAdapter';
+import { checkAmountFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot, refundSellerFromBot } from '../utils/botSmartContractAdapter';
 import { refundSeller } from '../escrow/main';
 
 type Order = {
@@ -21,19 +21,24 @@ type Order = {
         chatId?: number,
     }, 
     orderId: string,
-    step: 'amountSet' | 'addressSet' | 'watingCounterpart' | 'taken' | 'waitingFunding' | 'funded' | 'dispute' | 'done' | 'canceled'
+    step: 'amountSet' | 'addressSet' | 'watingCounterpart' | 'taken' | 'waitingFunding' | 'funded' | 'dispute' | 'done' | 'canceled' | 'defineAmount'
     status: 'active' | 'done'
     type: string
     amount?: string
     lastMessageId?: number,
-    escrowAddress?: string
-    orderMessageId?: number
+    escrowAddress?: string,
+    orderMessageId?: number,
+    range?: boolean,
 }
 
-const explorerBaseURL = "https://arbiscan.io"
+const explorerBaseURL = "https://basescan.org/"
 const helperCreateHash = (): string => {
     const uuid = randomUUID().toString()
     return createHash('md5').update(uuid, 'utf8').digest('base64url')
+}
+
+const rangeAmount = (input: string): boolean => {
+  return /^\d+-\d+$/.test(input);
 }
 
 // Temp storage
@@ -41,12 +46,13 @@ let users: string[] = []
 let orders: Order[] = []
 const channelId = Number(process.env.TELEGRAM_CHANNEL)
 const bot = new Telegraf(process.env.TELEGRAM_BOT!);
+const orderbook = process.env.ORDERBOOK_LINK
 
 
 bot.start((ctx) => {
     if (ctx.from.username) {
         users.push(ctx.from.username)
-        ctx.reply("Welcome, use this bot to place and configure your orders. subscribe to https://t.me/+9W7SKA0R-Z42YmFh to see all active orders")
+        ctx.reply(`Welcome, use this bot to place and configure your orders. subscribe to ${orderbook} to see all active orders`)
     } else {
         ctx.reply("Please set a username to use the bot")
     }
@@ -84,7 +90,7 @@ bot.action(/^(sell|buy)$/, async ctx => {
   await ctx.answerCbQuery();
   await ctx.deleteMessage();
 
-  const m = await ctx.reply(`Enter amount to ${action} in MXN`);
+  const m = await ctx.reply(`Enter exact amount or range (like 100-1000) to ${action} in XOC`);
 
   let order:Order = {
     orderId: helperCreateHash(),
@@ -157,7 +163,7 @@ bot.command('funded', async ctx => {
         const amount = activeOrder?.amount!
         await ctx.telegram.sendMessage(
             sellerChatId,
-            `Please confrim you deposited ${amount} MXNB in the escrow address ${escrow}`
+            `Please confrim you deposited ${amount} XOC in the escrow address ${escrow}`
         )
     }
 
@@ -171,18 +177,68 @@ bot.command('release', async ctx => {
         o.step === 'funded'
     )
 
+    const orderId = activeOrder?.orderId
+    const escrow = activeOrder?.escrowAddress!
     const buyerChatId = activeOrder?.buyer?.chatId!
+    const sellerChatId = activeOrder?.seller?.chatId!
 
+    const txHash = await confirmFiatReceivedFromBot(escrow)
+
+    if (txHash) {
+        await ctx.telegram.sendMessage(
+            sellerChatId,
+            "Transaction finished succesfully. Thanks for using our bot!"
+        )
+        await ctx.telegram.sendMessage(
+            buyerChatId,
+            "Transaction finished succesfully. Thanks for using our bot!"
+        )
+
+        orders = orders.map((o): Order =>
+                o.orderId !== orderId 
+                    ? o
+                    : {
+                        ...o,
+                        step: 'done',
+                        status: 'done'
+                        }
+            )
+    } else {
+        await ctx.telegram.sendMessage(
+            sellerChatId,
+            "There was an error releasing the funds. Please try again or contact support"
+        )
+        await ctx.telegram.sendMessage(
+            buyerChatId,
+            "There was an error releasing the funds. Wait for the seller to release again or contact support"
+        )
+    }
+
+
+})
+
+/*
+bot.command('release', async ctx => {
+    const username = ctx.from.username!
+    const activeOrder = orders.find(o =>
+        o.seller?.username === username &&
+        o.status === 'active' &&
+        o.step === 'funded'
+    )
+
+    const buyerChatId = activeOrder?.buyer?.chatId!
+    
     await ctx.telegram.sendMessage(
         buyerChatId, 
-        "You want to receive MXNB or USDT", 
+        "You want to receive XOC or USDT", 
         Markup.inlineKeyboard([
-                [ Markup.button.callback('MXNB', 'MXNB'), Markup.button.callback('USDT', 'USDT') ]
+                [ Markup.button.callback('XOC', 'XOC'), Markup.button.callback('USDT', 'USDT') ]
             ]
         )
     )
 
 })
+*/
 
 bot.command('help', async ctx => {
     await ctx.reply("Please contact @cuaucortes for assistance")
@@ -320,14 +376,16 @@ bot.on('text', async ctx => {
 
     if (activeOrder!.step === 'amountSet') {
         
-        const nextMessage = orderType === 'sell' ? "Enter address for refund (if necessary)" : "Enter address to receive MXNB"
+        const nextMessage = orderType === 'sell' ? "Enter address for refund (if necessary)" : "Enter address to receive XOC"
         await ctx.telegram.deleteMessage(ctx.chat.id, lastMessageId!)
         const m2 = await ctx.reply(nextMessage)
+        const isRange = rangeAmount(ctx.message.text)
         
         const updateOrders = orders.map(o => 
             o.orderId === orderId ? {
                 ...o,
                 amount: ctx.message.text,
+                range: isRange,
                 step: "addressSet" as Order["step"],
                 lastMessageId: m2.message_id
             } : o
@@ -340,7 +398,7 @@ bot.on('text', async ctx => {
         if (isAddress(makerAddress)) {
 
             const amount = activeOrder?.amount
-            const orderText = orderType === 'sell' ? `Selling ${amount} MXNB` : `Buying ${amount} MXNB`
+            const orderText = orderType === 'sell' ? `Selling ${amount} XOC` : `Buying ${amount} XOC`
             await ctx.telegram.deleteMessage(ctx.chat.id, lastMessageId!)
             const m2 = await ctx.reply(`Order created ${orderId}`,)
 
@@ -426,7 +484,7 @@ bot.on('text', async ctx => {
 
             await ctx.telegram.sendMessage(
                 updatedOrder?.seller?.chatId!,
-                `Escrow created, click [here](${escrowURL}) to see the details. Deposit ${updatedOrder?.amount!} MXNB and send /funded to the escrow address`,
+                `Escrow created, click [here](${escrowURL}) to see the details. Deposit ${updatedOrder?.amount!} XOC and send /funded to the escrow address`,
                 { parse_mode: 'Markdown' }
             )
 
@@ -439,10 +497,26 @@ bot.on('text', async ctx => {
         } else {
             await ctx.reply("Invalid address, please try again")
         }
+    } else if (activeOrder!.step === 'defineAmount') {
+        const nextMessage = orderType === 'sell' ? "Please enter the wallet where you want to receive XOC" : "Enter address for refund (if necessary)"
+        const m = await ctx.reply(nextMessage)
+        
+        orders = orders.map((o): Order =>
+            o.orderId !== orderId 
+                ? o
+                : {
+                    ...o,
+                    lastMessageId: m.message_id,
+                    amount: ctx.message.text,
+                    step: 'taken',
+                }
+        )
     }
 })
 
-bot.action(/^(MXNB|USDT)/, async ctx => {
+
+/*
+bot.action(/^(XOC|USDT)/, async ctx => {
     const token = ctx.match[0]
     const username = ctx.from.username!
     const activeOrder = orders.find(o =>
@@ -460,7 +534,7 @@ bot.action(/^(MXNB|USDT)/, async ctx => {
 
     await ctx.deleteMessage();
 
-    const txHash = token === "MXNB" ? await confirmFiatReceivedFromBot(escrow) : await swapAndSendFromBot(escrow)
+    const txHash = token === "XOC" ? await confirmFiatReceivedFromBot(escrow) : await swapAndSendFromBot(escrow)
     const explorerUrl = explorerBaseURL + `/tx/${txHash}`
 
     if (txHash) {
@@ -497,35 +571,55 @@ bot.action(/^(MXNB|USDT)/, async ctx => {
         )
     }
 }) 
+*/
 
 bot.action(/^take:(.+)$/, async ctx => {
     const id = ctx.match[1];
-    console.log("el id", id)
 
     const order = orders.find(o => o.orderId === id)
     const orderId = order?.orderId
     const orderType = order?.type
-
-    const orderMakerChatId = orderType === "sell" ? order?.seller?.chatId! : order?.buyer?.chatId!
-    const takerMessage = orderType === "sell" ? "Place enter the wallet where you want to receive MXNB" : "Enter address for refund (if necessary)"
+    const amountRange = order?.range
 
     const counterpart = {
         username: ctx.from.username!,
         chatId: ctx.from.id
     }
 
+    let takerMessage: string
 
-    orders = orders.map((o): Order =>
+    if (amountRange) {
+        const range = order.amount
+        takerMessage = `Select an amount between ${range}`
+        
+        orders = orders.map((o): Order =>
             o.orderId !== orderId 
                 ? o
                 : {
                     ...o,
-                    step: "taken",
+                    step: 'defineAmount',
                     ...(orderType === "sell"
                         ? { buyer: counterpart }
                         : { seller:  counterpart }),
                 }
-    )
+        )
+    } else {
+        takerMessage = orderType === "sell" ? "Please enter the wallet where you want to receive XOC" : "Enter address for refund (if necessary)"
+        
+        orders = orders.map((o): Order =>
+            o.orderId !== orderId 
+                ? o
+                : {
+                    ...o,
+                    step: 'taken',
+                    ...(orderType === "sell"
+                        ? { buyer: counterpart }
+                        : { seller:  counterpart }),
+                }
+        )
+    }
+
+    const orderMakerChatId = orderType === "sell" ? order?.seller?.chatId! : order?.buyer?.chatId!
 
     await ctx.answerCbQuery();
 
@@ -533,7 +627,7 @@ bot.action(/^take:(.+)$/, async ctx => {
 
     await ctx.telegram.sendMessage(
         orderMakerChatId,
-        `Order #${id} has been taken. Waiting for the counter part to set their address`
+        `Order #${id} has been taken. Waiting for the counter part to enter details`
     )
 
 
@@ -543,6 +637,9 @@ bot.action(/^take:(.+)$/, async ctx => {
     );
 })
 
+bot.on('channel_post', ctx => {
+  console.log('Channel ID:', ctx.channelPost.chat.id);
+});
 
 
 bot.launch()
