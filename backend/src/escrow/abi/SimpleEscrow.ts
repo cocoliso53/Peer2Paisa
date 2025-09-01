@@ -26,6 +26,7 @@ export const SimpleEscrowAbi = [
       { internalType: 'address', name: '_buyer', type: 'address' },
       { internalType: 'uint256', name: '_amount', type: 'uint256' },
       { internalType: 'address', name: '_bot', type: 'address' },
+      { internalType: 'address', name: '_token',  type: 'address' }
     ],
     stateMutability: 'nonpayable',
     type: 'constructor',

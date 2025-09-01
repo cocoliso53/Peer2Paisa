@@ -1,29 +1,28 @@
-pragma solidity ^0.8.20;
+ // SPDX-License-Identifier: MIT
+ pragma solidity ^0.8.20;
 
-import "./SwapEscrow.sol";
+ import "./SimpleEscrow.sol";
 
-contract EscrowFactory {
-    address public bot;
-    address public constant uniRouter = 0xE592427A0AEce92De3Edee1F18E0157C05861564;
+ contract EscrowFactory {
+	 address public bot;
 
+	 event EscrowCreated(address indexed escrowAddress, address seller, address buyer, uint256 amount, address token);
 
-    event EscrowCreated(address indexed escrowAddress, address seller, address buyer, uint256 amount);
+	 constructor(address _bot) {
+		 bot = _bot;
+	 }
 
-    constructor(address _bot) {
-        bot = _bot;
-    }
+	 function createEscrow(
+		 address _seller,
+		 address _buyer,
+		 uint256 _amount,
+		 address _token
+	 ) external returns (address) {
+		 require(msg.sender == bot, "Only bot can create escrows");
 
-    function createEscrow(
-        address _seller,
-        address _buyer,
-        uint256 _amount
-    ) external returns (address) {
-        require(msg.sender == bot, "Only bot can create escrows");
-
-        SwapEscrow escrow = new SwapEscrow(_seller, _buyer, _amount, bot, uniRouter);
-        emit EscrowCreated(address(escrow), _seller, _buyer, _amount);
-
-        return address(escrow);
-    }
-}
-
+		 SimpleEscrow escrow = new SimpleEscrow(_seller, _buyer, _amount, bot, _token);
+		 emit EscrowCreated(address(escrow), _seller, _buyer, _amount, _token);
+		 
+		 return address(escrow);
+	 }
+ }
