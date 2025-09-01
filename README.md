@@ -14,7 +14,7 @@ To deploy your own version of the bot you'll need
 
 ### Smart Contracts
 
-Get both `EscrowFactory.sol` and `SwapEscrow.sol` in the `Peer2Paisa/smartcontracts` directory. 
+Get both `EscrowFactory.sol` and `SimpleEscrow.sol` in the `Peer2Paisa/smartcontracts` directory. 
 Place both files in the same project. Then you can compile and deploy `EscrowFactory.sol`, set paramater `address_bot` to the address of your EOA.
  
 Take note of the resulting address for the deployed smart contract since you'll need this for the `.env` file
