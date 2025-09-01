@@ -21,3 +21,20 @@ Thumbs.db
 .vscode/
 .idea/
 
+# PureScript
+# PureScript
+backend/purescript/.spago/
+backend/purescript/output/
+backend/purescript/**/*.lock
+backend/.psc-ide-port
+*/bower_components/
+*/node_modules/
+*/.pulp-cache/
+*/output/
+*/generated-docs/
+*/.psc-package/
+*/.psc*
+*/.purs*
+*/.psa*
+*/.spago
+
