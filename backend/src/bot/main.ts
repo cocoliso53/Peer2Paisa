@@ -9,6 +9,14 @@ import { isAddress } from 'viem';
 import { checkAmountFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot, refundSellerFromBot } from '../utils/botSmartContractAdapter';
 import { refundSeller } from '../escrow/main';
 
+const { createFSM } = require('../fsm/toy')
+
+let fsm: any;
+createFSM().then((f: any) => {
+  fsm = f;
+  console.log("PureScript FSM loaded");
+});
+
 type Order = {
     buyer?: {
         username: string,
@@ -53,6 +61,13 @@ const orderbook = process.env.ORDERBOOK_LINK
 
 
 bot.start((ctx) => {
+    const result = fsm.step(
+        { state: "Idle" }, 
+        { tag: "Start" }
+    );
+
+    console.log("result", result)
+
     if (ctx.from.username) {
         users.push(ctx.from.username)
         ctx.reply(`Welcome, use this bot to place and configure your orders. subscribe to ${orderbook} to see all active orders`)
