@@ -8,6 +8,8 @@ import { createHash, randomUUID } from 'crypto';
 import { isAddress } from 'viem';
 import { checkAmountFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot, refundSellerFromBot } from '../utils/botSmartContractAdapter';
 import { refundSeller } from '../escrow/main';
+import { greet } from '../utils/cljs-wrapper'
+
 
 type Order = {
     buyer?: {
@@ -53,6 +55,7 @@ const orderbook = process.env.ORDERBOOK_LINK
 
 
 bot.start((ctx) => {
+    console.log('Greet:', greet('TypeScript'));
     if (ctx.from.username) {
         users.push(ctx.from.username)
         ctx.reply(`Welcome, use this bot to place and configure your orders. subscribe to ${orderbook} to see all active orders`)

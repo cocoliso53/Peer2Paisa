@@ -1,0 +1,11 @@
+{:source-paths ["src/cljs"]
+ :dependencies [[org.clojure/clojure "1.11.1"]
+                [org.clojure/clojurescript "1.11.60"]]
+ :builds
+ {:backend {:target :node-library
+            :output-to "../dist/fsm-lib.js"
+            :exports {:greet fsm.core/greet
+                      :processData fsm.core/process-data
+                      :fibonacci fsm.core/fibonacci
+                      :readFileAsync fsm.core/read-file-async
+                      :transformJson fsm.core/transform-json}}}}

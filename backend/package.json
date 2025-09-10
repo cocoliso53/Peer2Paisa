@@ -2,14 +2,22 @@
   "name": "backend",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/bot/main.js",
   "scripts": {
+    "cljs:build": "cd fsm && shadow-cljs compile backend",
+    "cljs:watch": "cd fsm && shadow-cljs watch backend",
+    "ts:build": "tsc",
+    "ts:watch": "tsc --watch",
+    "build": "npm run cljs:build && npm run ts:build",
+    "dev": "npm run build && node dist/bot/main.js",
+    "start": "node dist/bot/main.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "shadow-cljs": "^3.2.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.3"
   },

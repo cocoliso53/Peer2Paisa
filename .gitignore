@@ -13,6 +13,17 @@ dist/
 # TypeScript
 *.tsbuildinfo
 
+# ClojureScript / Shadow-CLJS
+.shadow-cljs/
+.cljs_node_repl/
+target/
+.cpcache/
+.nrepl-port
+.rebel_readline_history
+*.jar
+.lein-*
+.cljs_repl_history
+
 # OS-specific
 .DS_Store
 Thumbs.db
@@ -21,3 +32,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# JVM crash logs (can occur with ClojureScript compilation)
+hs_err_pid*
+
+# Clojure-specific temporary files
+pom.xml
+pom.xml.asc
