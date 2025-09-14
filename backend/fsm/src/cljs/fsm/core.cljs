@@ -2,28 +2,56 @@
   (:require ["fs" :as fs]
             ["path" :as path]))
 
-(defn ^:export greet [name]
-  (str "Hello from ClojureScript backend, " name "!"))
+;; Delta will be ð: SxE -> S
+;; we will make ð_si: E -> S for each si in S
+;; So ð(si,e) = ð_si(e)
+;; if the state and event are not a valid combination we will just return nil
+;; and will interpret it as the nil state
 
-(defn ^:export process-data [data]
-  (->> data
-       (map #(* % 2))
-       (filter #(> % 10))
-       (into [])))
 
-(defn ^:export fibonacci [n]
-  (loop [a 0 b 1 count n]
-    (if (zero? count)
-      a
-      (recur b (+ a b) (dec count)))))
+(defn set-original-buyer-or-seller
+  [state {:keys [event username]}]
+  (when username
+    (assoc state
+           ({"buy" :buyer "sell" :seller} event) username
+           :state "waitingNewOrderAmount")))
+    
 
-;; Async example using Node.js fs
-(defn ^:export read-file-async [file-path callback]
-  (.readFile fs file-path "utf8" 
-    (fn [err data]
-      (if err
-        (callback err nil)
-        (callback nil (.toUpperCase data))))))
+(defn delta-s0
+  [state event]
+  (let [state-name (:state state)
+        event-name (:event event)]
+    (when (= state-name "s0") ;; extra security check
+      ;; We make explicit the valid states even tho it looks redundant for now
+      (case event-name
+        "cancel" (assoc state :state "canceled")
+        "buy"    (set-original-buyer-or-seller state event)
+        "sell"   (set-original-buyer-or-seller state event)
+        nil))))
+
+(defn delta
+  [{:keys [state] :as s} event]
+  (let [_ (js/console.log state)]
+    (case state
+      "s0" (delta-s0 s event)
+       s)))
+
+(defn ^:export delta-wrapped
+  [js-state js-event]
+  (let [state (js->clj js-state :keywordize-keys true)
+        event (js->clj js-event :keywordize-keys true)
+        _ (js/console.log js-state)
+        _ (js/console.log js-event)
+        _ (println state)]
+    (clj->js (delta state event))))
+
+;; vamos a hacer una prueba 
+(defn ^:export prueba-data 
+  [data]
+  (let [clj-data (js->clj data :keywordize-keys true)
+        new-data (merge clj-data
+                        {:stuff "lol"})]
+    (clj->js new-data)))
 
 ;; Working with JSON
 (defn ^:export transform-json [json-str]

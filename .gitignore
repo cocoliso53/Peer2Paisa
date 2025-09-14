@@ -38,3 +38,9 @@ hs_err_pid*
 # Clojure-specific temporary files
 pom.xml
 pom.xml.asc
+
+*/.clj-kondo/
+*/.lsp/
+*#core.cljs#
+*.#core.cljs
+

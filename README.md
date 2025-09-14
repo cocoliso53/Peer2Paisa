@@ -72,3 +72,31 @@ npx ts-node main.ts
 ```
 
 That should start the bot, now you can use it on telegram!
+
+
+### CLJS interop
+
+build with `npm run cljs:build` on `./backend`
+
+When adding code to the `.cljs` file be sure to export the function on `shadow-cljs.edn` 
+and declare/define the type on `cljs-wrapper.ts`
+
+### Finite State Machine
+
+First approach:
+
+- d: SxE -> S
+- w: SxE -> T
+- f: SxE -> SxT => f(s,e) = (d(s,e), w(s,e))
+
+S - states
+E - events
+T - outputs
+s0 - initial state
+
+state = orderState
+
+s0 = minimal Order 
+
+s0 = Order with uuid and cratedAt timestap
+Events on s0 -> sell, buy, cancel

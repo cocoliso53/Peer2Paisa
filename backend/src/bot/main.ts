@@ -8,7 +8,7 @@ import { createHash, randomUUID } from 'crypto';
 import { isAddress } from 'viem';
 import { checkAmountFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot, refundSellerFromBot } from '../utils/botSmartContractAdapter';
 import { refundSeller } from '../escrow/main';
-import { greet } from '../utils/cljs-wrapper'
+import { deltaWrapped, pruebaData } from '../utils/cljs-wrapper'
 
 
 type Order = {
@@ -25,9 +25,11 @@ type Order = {
         canceled?: boolean,
     }, 
     orderId: string,
-    step: 'amountSet' | 'addressSet' | 'watingCounterpart' | 'taken' | 'waitingFunding' | 'funded' | 'dispute' | 'done' | 'canceled' | 'defineAmount'
-    status: 'active' | 'done'
-    type: string
+    step?: 'amountSet' | 'addressSet' | 'watingCounterpart' | 'taken' | 'waitingFunding' | 'funded' | 'dispute' | 'done' | 'canceled' | 'defineAmount'
+    state?: 's0' // will substitute step
+    status: 'active' | 'done' | 'canceled'
+    type?: string
+    sell?: boolean // will replace type
     amount?: string
     lastMessageId?: number,
     escrowAddress?: string,
@@ -46,6 +48,13 @@ const rangeAmount = (input: string): boolean => {
   return /^\d+-\d+$/.test(input);
 }
 
+const s_0 = (): Order => ({
+    state: 's0',
+    status: 'active',
+    orderId: helperCreateHash(),
+
+})
+
 // Temp storage
 let users: string[] = []
 let orders: Order[] = []
@@ -55,7 +64,6 @@ const orderbook = process.env.ORDERBOOK_LINK
 
 
 bot.start((ctx) => {
-    console.log('Greet:', greet('TypeScript'));
     if (ctx.from.username) {
         users.push(ctx.from.username)
         ctx.reply(`Welcome, use this bot to place and configure your orders. subscribe to ${orderbook} to see all active orders`)
@@ -70,6 +78,7 @@ bot.command('create', ctx => {
         ctx.reply("Can't use the bot with no username")
     }
     const activeUser = users.includes(username!)
+    // replace with db query should take a state/order
     const activeOrder = orders.some(o =>
         o.buyer?.username === username &&
         o.seller?.username === username &&
@@ -91,20 +100,28 @@ bot.command('create', ctx => {
 })
 
 bot.action(/^(sell|buy)$/, async ctx => {
-  const action = ctx.match[1];
+    const action = ctx.match[1];
+    
+    await ctx.answerCbQuery();
+    await ctx.deleteMessage();
 
-  await ctx.answerCbQuery();
-  await ctx.deleteMessage();
-
-  const m = await ctx.reply(`Enter exact amount or range (eg. 100-1000) to ${action} in XOC`);
-
-  let order:Order = {
-    orderId: helperCreateHash(),
-    step: 'amountSet',
-    status: 'active',
-    lastMessageId: m.message_id,
-    type: action
-  }
+    const m = await ctx.reply(`Enter exact amount or range (eg. 100-1000) to ${action} in XOC`);
+    
+    let order:Order = {
+        orderId: helperCreateHash(),
+        step: 'amountSet',
+        status: 'active',
+        lastMessageId: m.message_id,
+        type: action
+    }
+    
+    const newOrder = s_0()
+    console.log('Data aumentada:', deltaWrapped(newOrder, 
+        {
+            event: action,
+            username: ctx.from.username!
+        }
+    ));
 
   if (action === 'sell') {
     order = {

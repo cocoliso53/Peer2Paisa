@@ -4,8 +4,6 @@
  :builds
  {:backend {:target :node-library
             :output-to "../dist/fsm-lib.js"
-            :exports {:greet fsm.core/greet
-                      :processData fsm.core/process-data
-                      :fibonacci fsm.core/fibonacci
-                      :readFileAsync fsm.core/read-file-async
+            :exports {:deltaWrapped fsm.core/delta-wrapped
+                      :pruebaData fsm.core/prueba-data
                       :transformJson fsm.core/transform-json}}}}
