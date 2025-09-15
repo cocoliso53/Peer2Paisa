@@ -119,7 +119,8 @@ bot.action(/^(sell|buy)$/, async ctx => {
     console.log('Data aumentada:', deltaWrapped(newOrder, 
         {
             event: action,
-            username: ctx.from.username!
+            username: ctx.from.username!,
+            messageId: m.message_id!
         }
     ));
 
