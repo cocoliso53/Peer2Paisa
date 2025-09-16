@@ -6,4 +6,5 @@
             :output-to "../dist/fsm-lib.js"
             :exports {:deltaWrapped fsm.core/delta-wrapped
                       :pruebaData fsm.core/prueba-data
-                      :transformJson fsm.core/transform-json}}}}
+                      :transformJson fsm.core/transform-json}}
+  :test    {:target }}}

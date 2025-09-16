@@ -9,7 +9,7 @@ import { isAddress } from 'viem';
 import { checkAmountFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot, refundSellerFromBot } from '../utils/botSmartContractAdapter';
 import { refundSeller } from '../escrow/main';
 import { deltaWrapped, pruebaData } from '../utils/cljs-wrapper'
-
+import { getOrderById, updateOrder, getActiveOrderByParticipant } from '../db';
 
 type Order = {
     buyer?: {
@@ -25,6 +25,7 @@ type Order = {
         canceled?: boolean,
     }, 
     orderId: string,
+    participants?: string[],
     step?: 'amountSet' | 'addressSet' | 'watingCounterpart' | 'taken' | 'waitingFunding' | 'funded' | 'dispute' | 'done' | 'canceled' | 'defineAmount'
     state?: 's0' // will substitute step
     status: 'active' | 'done' | 'canceled'
@@ -63,7 +64,7 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT!);
 const orderbook = process.env.ORDERBOOK_LINK
 
 
-bot.start((ctx) => {
+bot.start(async (ctx) => {
     if (ctx.from.username) {
         users.push(ctx.from.username)
         ctx.reply(`Welcome, use this bot to place and configure your orders. subscribe to ${orderbook} to see all active orders`)
@@ -116,33 +117,35 @@ bot.action(/^(sell|buy)$/, async ctx => {
     }
     
     const newOrder = s_0()
-    console.log('Data aumentada:', deltaWrapped(newOrder, 
+    const dataAumentada =  deltaWrapped(newOrder, 
         {
             event: action,
             username: ctx.from.username!,
             messageId: m.message_id!
         }
-    ));
-
-  if (action === 'sell') {
-    order = {
-        ...order,
-        seller: {
-            username: ctx.from.username!,
-
+    )
+    console.log('Data aumentada:', dataAumentada);
+    
+    if (action === 'sell') {
+        order = {
+            ...order,
+            seller: {
+                username: ctx.from.username!
+            }
+        }
+    } else if (action === 'buy') {
+        order = {
+            ...order,
+            buyer: {
+                username: ctx.from.username!
+            }
         }
     }
-  } else if (action === 'buy') {
-    order = {
-        ...order,
-        buyer: {
-            username: ctx.from.username!
-        }
-    }
-  }
 
-  console.log("order", order)
-  orders.push(order)
+    const up = await updateOrder(dataAumentada)
+    console.log("dbCouch", up)
+    console.log("order", order)
+    orders.push(order)
 });
 
 // NOTE:  Maybe I should use a webhook to replace this logic
@@ -393,6 +396,10 @@ bot.on('text', async ctx => {
         o.status === 'active'
     )
 
+    const { docs } = await getActiveOrderByParticipant(username)
+    const activeCouch = docs[0]
+    console.log("activeCouch",activeCouch)
+
     const orderId = activeOrder?.orderId
     const lastMessageId = activeOrder?.lastMessageId
     const orderType = activeOrder?.type
@@ -402,6 +409,8 @@ bot.on('text', async ctx => {
     if (!activeOrder) {
         await ctx.reply("Something went wrong")
     }
+
+
 
     if (activeOrder!.step === 'amountSet') {
         

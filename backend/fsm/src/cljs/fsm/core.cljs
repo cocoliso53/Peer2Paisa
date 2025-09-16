@@ -23,6 +23,7 @@
   (when username
     (assoc state
            ({"buy" :buyer "sell" :seller} event) {:username username}
+           :participants [username]
            :sell? (= event "sell")
            :lastMessageId messageId)))
 
@@ -33,6 +34,11 @@
            :range (range-amount? amount)
            :amount amount
            :lastMessageId messageId)))
+
+(defn cancel-order
+  [state _]
+  (assoc state
+         :status "canceled"))
   
 
 ;; Delta will be ð: SxE -> S
@@ -52,7 +58,7 @@
                      (set-new-state "waitingNewOrderAmount"))
         "sell"   (-> (set-original-buyer-or-seller state event)
                      (set-new-state "waitingNewOrderAmount"))
-        "cancel" (-> state
+        "cancel" (-> (cancel-order state event)
                      (set-new-state "canceled"))
         nil))))
 
@@ -64,7 +70,7 @@
       (case event-name
         "setAmount" (-> (set-amount-or-range state event)
                         (set-new-state "waitingSetAddress"))
-        "cancel"    (-> state
+        "cancel"    (-> (cancel-order state event)
                      (set-new-state "canceled"))))))
 
 (defn delta
