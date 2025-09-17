@@ -24,15 +24,15 @@
     (assoc state
            ({"buy" :buyer "sell" :seller} event) {:username username}
            :participants [username]
-           :sell? (= event "sell")
+           :sell (= event "sell")
            :lastMessageId messageId)))
 
 (defn set-amount-or-range
-  [state {:keys [event amount messageId]}]
-  (when (number-or-range? amount)
+  [state {:keys [data messageId]}]
+  (when (number-or-range? data)
     (assoc state
-           :range (range-amount? amount)
-           :amount amount
+           :range (range-amount? data) ;; Do we need this? 
+           :amount data
            :lastMessageId messageId)))
 
 (defn cancel-order
@@ -75,18 +75,15 @@
 
 (defn delta
   [{:keys [state] :as s} event]
-  (let [_ (js/console.log state)]
-    (case state
-      "s0"                    (delta-s0 s event)
-      "waitingNewOrderAmount" (delta-waitingNewOrderAmount s event)
-      s)))
+  (case state
+    "s0"                    (delta-s0 s event)
+    "waitingNewOrderAmount" (delta-waitingNewOrderAmount s event)
+    s))
 
 (defn ^:export delta-wrapped
   [js-state js-event]
   (let [state (js->clj js-state :keywordize-keys true)
-        event (js->clj js-event :keywordize-keys true)
-        _ (js/console.log js-state)
-        _ (js/console.log js-event)]
+        event (js->clj js-event :keywordize-keys true)]
     (clj->js (delta state event))))
 
 ;; vamos a hacer una prueba 

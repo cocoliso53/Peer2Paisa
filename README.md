@@ -81,6 +81,8 @@ build with `npm run cljs:build` on `./backend`
 When adding code to the `.cljs` file be sure to export the function on `shadow-cljs.edn` 
 and declare/define the type on `cljs-wrapper.ts`
 
+to run tests `npx shadow-cljs compile test` on `./backend/fsm`
+
 ### Finite State Machine
 
 First approach:
