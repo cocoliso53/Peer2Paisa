@@ -41,7 +41,11 @@
               :status  "canceled"
               :orderId "orderId123"}
              (core/delta s0 {:event "cancel"})))
-      (is (nil? (core/delta s0 {:event "invalid"}))))
+      (is (= {:state   "s0",
+              :status  "active",
+              :orderId "orderId123",
+              :error   "Invalid transition"}
+             (core/delta s0 {:event "invalid"}))))
 
     (testing "waitingNewOrderAmount transitions"
       (is (= {:amount        "100-1000",
@@ -70,15 +74,50 @@
                          {:event     "setAmount"
                           :data      "100"
                           :messageId 1111})))
-      ;; Go back to these
-      #_(is (nil? (core/delta buy-state
-                            {:event     "setAmount"
-                             :data      "not-valid"
-                             :messageId 1111})))
-      #_(is (nil? (core/delta buy-state
-                            {:event     "setAmount"
-                             :data      nil
-                             :messageId 1111})))
+      (is (= {:state         "waitingNewOrderAmount"
+              :status        "active"
+              :orderId       "orderId123"
+              :buyer         {:username "username"}
+              :participants  ["username"]
+              :sell          false
+              :lastMessageId 1234
+              :error         "Invalid range or number"}
+             (core/delta buy-state
+                         {:event     "setAmount"
+                          :data      "not-valid"
+                          :messageId 1111})))
+      (is (= {:state         "waitingNewOrderAmount"
+              :status        "active"
+              :orderId       "orderId123"
+              :buyer         {:username "username"}
+              :participants  ["username"]
+              :sell          false
+              :lastMessageId 1234
+              :error         "Invalid range or number"}
+             (core/delta buy-state
+                         {:event     "setAmount"
+                          :data      nil
+                          :messageId 1111})))
+      (is (= {:amount        "100"
+              :participants  ["username"]
+              :state         "waitingSetAddress"
+              :sell          false
+              :status        "active"
+              :lastMessageId 1111
+              :buyer         {:username "username"}
+              :range         false
+              :orderId       "orderId123"}
+             (core/delta {:state         "waitingNewOrderAmount"
+                          :status        "active"
+                          :orderId       "orderId123"
+                          :buyer         {:username "username"}
+                          :participants  ["username"]
+                          :sell          false
+                          :lastMessageId 1234
+                          :error         "Invalid range or number"}
+                         {:event     "setAmount"
+                          :data      "100"
+                          :messageId 1111})))
       (is (= {:state         "canceled",
               :status        "canceled",
               :orderId       "orderId123",

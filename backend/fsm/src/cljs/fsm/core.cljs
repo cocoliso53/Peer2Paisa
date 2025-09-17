@@ -6,7 +6,9 @@
 
 (defn set-new-state
   [m new-state]
-  (assoc m :state new-state))
+  (if (:error m)
+    m
+    (assoc m :state new-state)))
 
 (defn range-amount?
   [input]
@@ -20,20 +22,28 @@
 
 (defn set-original-buyer-or-seller
   [state {:keys [event username messageId]}]
-  (when username
+  (if username
+    (-> state
+        (assoc
+         ({"buy" :buyer "sell" :seller} event) {:username username}
+         :participants [username]
+         :sell (= event "sell")
+         :lastMessageId messageId)
+        (dissoc :error))
     (assoc state
-           ({"buy" :buyer "sell" :seller} event) {:username username}
-           :participants [username]
-           :sell (= event "sell")
-           :lastMessageId messageId)))
+           :error "No username")))
 
 (defn set-amount-or-range
   [state {:keys [data messageId]}]
-  (when (number-or-range? data)
+  (if (number-or-range? data)
+    (-> state
+        (assoc 
+         :range (range-amount? data) ;; Do we need this? 
+         :amount data
+         :lastMessageId messageId)
+        (dissoc :error))
     (assoc state
-           :range (range-amount? data) ;; Do we need this? 
-           :amount data
-           :lastMessageId messageId)))
+           :error "Invalid range or number")))
 
 (defn cancel-order
   [state _]
@@ -47,59 +57,30 @@
 ;; if the state and event are not a valid combination we will just return nil
 ;; and will interpret it as the nil state
 
-(defn delta-s0
-  [state event]
-  (let [state-name (:state state)
-        event-name (:event event)]
-    (when (= state-name "s0") ;; extra security check
-      ;; We make explicit the valid states even tho it looks redundant for now
-      (case event-name
-        "buy"    (-> (set-original-buyer-or-seller state event)
-                     (set-new-state "waitingNewOrderAmount"))
-        "sell"   (-> (set-original-buyer-or-seller state event)
-                     (set-new-state "waitingNewOrderAmount"))
-        "cancel" (-> (cancel-order state event)
-                     (set-new-state "canceled"))
-        nil))))
-
-(defn delta-waitingNewOrderAmount
-  [state event]
-  (let [state-name (:state state)
-        event-name (:event event)]
-    (when (= state-name "waitingNewOrderAmount")
-      (case event-name
-        "setAmount" (-> (set-amount-or-range state event)
-                        (set-new-state "waitingSetAddress"))
-        "cancel"    (-> (cancel-order state event)
-                     (set-new-state "canceled"))))))
+(def transition-table
+  {["s0" "buy"]    {:transition set-original-buyer-or-seller
+                    :to         "waitingNewOrderAmount"}
+   ["s0" "sell"]   {:transition set-original-buyer-or-seller
+                    :to         "waitingNewOrderAmount"}
+   ["s0" "cancel"] {:transition cancel-order
+                    :to         "canceled"}
+   ["waitingNewOrderAmount"
+    "setAmount"]   {:transition set-amount-or-range
+                    :to         "waitingSetAddress"}
+   ["waitingNewOrderAmount"
+    "cancel"]      {:transition cancel-order
+                    :to         "canceled"}})
 
 (defn delta
-  [{:keys [state] :as s} event]
-  (case state
-    "s0"                    (delta-s0 s event)
-    "waitingNewOrderAmount" (delta-waitingNewOrderAmount s event)
-    s))
+  [{state :state :as s} {event :event :as e}]
+  (let [transition-map (get transition-table [state event])]
+    (if transition-map
+      (-> ((:transition transition-map) s e)
+          (set-new-state (:to transition-map)))
+      (assoc s :error "Invalid transition"))))
 
 (defn ^:export delta-wrapped
   [js-state js-event]
   (let [state (js->clj js-state :keywordize-keys true)
         event (js->clj js-event :keywordize-keys true)]
     (clj->js (delta state event))))
-
-;; vamos a hacer una prueba 
-(defn ^:export prueba-data 
-  [data]
-  (let [clj-data (js->clj data :keywordize-keys true)
-        new-data (merge clj-data
-                        {:stuff "lol"})]
-    (clj->js new-data)))
-
-;; Working with JSON
-(defn ^:export transform-json [json-str]
-  (-> json-str
-      js/JSON.parse
-      (js->clj :keywordize-keys true)
-      (update :count inc)
-      (assoc :processed-by "clojurescript")
-      clj->js
-      js/JSON.stringify))
