@@ -2,7 +2,7 @@
   (:require ["fs" :as fs]
             ["path" :as path]))
 
-;; Helpers
+;; State helpers
 
 (defn set-new-state
   [m new-state]
@@ -45,11 +45,6 @@
     (assoc state
            :error "Invalid range or number")))
 
-(defn cancel-order
-  [state _]
-  (assoc state
-         :status "canceled"))
-
 (defn set-owner-user-data
   [{sell :sell :as state} {{:keys [text user messageId]} :data}]
   ;; need to add address validation
@@ -60,6 +55,23 @@
     (assoc state
          :error "No full user data")))
 
+(defn cancel-order
+  [state _]
+  (assoc state
+         :status "canceled"))
+
+;; Effects helpers
+(defn effect-original-buyer-or-seller
+  [_ {event :event}]
+  (let [msg (str "Enter exact amount or range (eg. 100-1000) to " event)]
+    {:reply [msg]}))
+
+(defn effect-simple-cancel
+  [_ _]
+  {:reply ["Order canceled succesfully"]})
+  
+  
+
 ;; Delta will be ð: SxE -> S
 ;; if the state and event are not a valid combination we will just return
 ;; the same state with the :error keyword, we should react to this in ts
@@ -67,22 +79,29 @@
 
 (def transition-table
   {["s0" "buy"]    {:transition set-original-buyer-or-seller
+                    :effects    effect-original-buyer-or-seller
                     :to         "waitingNewOrderAmount"}
    ["s0" "sell"]   {:transition set-original-buyer-or-seller
+                    :effects    effect-original-buyer-or-seller
                     :to         "waitingNewOrderAmount"}
    ["s0" "cancel"] {:transition cancel-order
+                    :effects    effect-simple-cancel
                     :to         "canceled"}
    ["waitingNewOrderAmount"
     "setAmount"]   {:transition set-amount-or-range
+                    :effects    identity
                     :to         "waitingSetAddress"}
    ["waitingNewOrderAmount"
     "cancel"]      {:transition cancel-order
+                    :effects    effect-simple-cancel
                     :to         "canceled"}
    ["waitingSetAddress"
     "setAddress"]  {:transition set-owner-user-data
+                    :effects    identity
                     :to         "watingCounterpart"}
    ["waitingSetAddress"
     "cancel"]      {:transition cancel-order
+                    :effects    effect-simple-cancel
                     :to         "canceled"}})
 
 (defn delta
@@ -92,6 +111,18 @@
       (-> ((:transition transition-map) s e)
           (set-new-state (:to transition-map)))
       (assoc s :error "Invalid transition"))))
+
+;; Omega will be ω: SxE -> T
+;; where T are effects or instructions
+;; to be performed by the bot (eg sending messages, replying, etc)
+
+(defn omega
+  [{state :state :as s} {event :event :as e}]
+  (let [transition-map (get transition-table [state event])]
+    (if transition-map
+      ((:effects transition-map) s e)
+      {:error "Invalid transition, no effect"}))) ;; confirm this is the effect we want
+
 
 (defn ^:export delta-wrapped
   [js-state js-event]

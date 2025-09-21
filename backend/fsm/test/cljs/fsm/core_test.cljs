@@ -228,6 +228,23 @@
                                         :user      user
                                         :messageId 1112}}])))))
 
+(deftest omega-s0-effects
+
+  (testing "s0 transition effects"
+    (is (= {:reply ["Enter exact amount or range (eg. 100-1000) to sell"]}
+           (core/omega s0
+                       (assoc base-event :event "sell"))))
+
+    (is (= {:reply ["Enter exact amount or range (eg. 100-1000) to buy"]}
+           (core/omega s0
+                       (assoc base-event :event "buy"))))
+    (is (= {:reply ["Order canceled succesfully"]}
+           (core/omega s0
+                       (assoc base-event :event "cancel"))))
+    (is (= {:error "Invalid transition, no effect"}
+           (core/omega s0
+                       (assoc base-event :event "invalid"))))))
+
 (deftest delta-cancel
   (testing "cancel from s0"
     (let [state {:state "s0"}
