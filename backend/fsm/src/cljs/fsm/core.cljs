@@ -21,7 +21,7 @@
     (boolean (re-matches #"\d+(-\d+)?" s))))
 
 (defn set-original-buyer-or-seller
-  [state {:keys [event username messageId]}]
+  [state {{:keys [username messageId]} :data event :event}]
   (if username
     (-> state
         (assoc
@@ -34,12 +34,12 @@
            :error "No username")))
 
 (defn set-amount-or-range
-  [state {:keys [data messageId]}]
-  (if (number-or-range? data)
+  [state {{:keys [text messageId]} :data}]
+  (if (number-or-range? text)
     (-> state
         (assoc 
-         :range (range-amount? data) ;; Do we need this? 
-         :amount data
+         :range (range-amount? text) ;; Do we need this? 
+         :amount text
          :lastMessageId messageId)
         (dissoc :error))
     (assoc state
@@ -49,13 +49,21 @@
   [state _]
   (assoc state
          :status "canceled"))
-  
+
+(defn set-owner-user-data
+  [{sell :sell :as state} {{:keys [text user messageId]} :data}]
+  ;; need to add address validation
+  (if user
+    (assoc state
+           (if sell :seller :buyer) user
+           :lastMessageId messageId)
+    (assoc state
+         :error "No full user data")))
 
 ;; Delta will be ð: SxE -> S
-;; we will make ð_si: E -> S for each si in S
-;; So ð(si,e) = ð_si(e)
-;; if the state and event are not a valid combination we will just return nil
-;; and will interpret it as the nil state
+;; if the state and event are not a valid combination we will just return
+;; the same state with the :error keyword, we should react to this in ts
+;; the proper way (tbd)
 
 (def transition-table
   {["s0" "buy"]    {:transition set-original-buyer-or-seller
@@ -68,6 +76,12 @@
     "setAmount"]   {:transition set-amount-or-range
                     :to         "waitingSetAddress"}
    ["waitingNewOrderAmount"
+    "cancel"]      {:transition cancel-order
+                    :to         "canceled"}
+   ["waitingSetAddress"
+    "setAddress"]  {:transition set-owner-user-data
+                    :to         "watingCounterpart"}
+   ["waitingSetAddress"
     "cancel"]      {:transition cancel-order
                     :to         "canceled"}})
 
