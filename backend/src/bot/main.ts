@@ -8,7 +8,7 @@ import { createHash, randomUUID } from 'crypto';
 import { isAddress } from 'viem';
 import { checkAmountFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot, refundSellerFromBot } from '../utils/botSmartContractAdapter';
 import { refundSeller } from '../escrow/main';
-import { deltaWrapped, pruebaData } from '../utils/cljs-wrapper'
+import { deltaWrapped } from '../utils/cljs-wrapper'
 import { getOrderById, updateOrder, getActiveOrderByParticipant } from '../db';
 
 type Order = {
@@ -120,8 +120,10 @@ bot.action(/^(sell|buy)$/, async ctx => {
     const dataAumentada =  deltaWrapped(newOrder, 
         {
             event: action,
-            username: ctx.from.username!,
-            messageId: m.message_id!
+            data: {
+                username: ctx.from.username!,
+                messageId: m.message_id!
+            }
         }
     )
     console.log('Data aumentada:', dataAumentada);
@@ -396,20 +398,53 @@ bot.on('text', async ctx => {
         o.status === 'active'
     )
 
+    // Testing fsm and couchdb
     const { docs } = await getActiveOrderByParticipant(username)
     const activeCouch = docs[0]
     console.log("activeCouch",activeCouch)
 
+
     const orderId = activeOrder?.orderId
     const lastMessageId = activeOrder?.lastMessageId
     const orderType = activeOrder?.type
-
-    console.log("Active order", activeOrder)
-
+    
     if (!activeOrder) {
         await ctx.reply("Something went wrong")
     }
 
+    const data = {
+        text: ctx.message.text,
+    }
+
+    const user = {
+        username: ctx.from.username!, 
+        address:  ctx.message.text,
+        chatId: ctx.from.id
+    }
+
+
+    let eventObject = (() => {
+        switch (activeCouch.state) {
+            case 'waitingNewOrderAmount':
+                return { event: "setAmount", data }
+            case 'waitingSetAddress':
+                return { 
+                    event: "setAddress", 
+                    data : {
+                        text: ctx.message.text,
+                        user: user
+                    }
+                }
+            case 'orderTaken': 
+                return { event: "counterpartyDetails", counterpart: { username: ctx.from.username!, chatId: ctx.from.id, address: data} }
+            case 'defineAmount':    
+                return { event: "setAmount", data }
+        }
+    })()
+
+    const newState = deltaWrapped(activeCouch, eventObject)
+    await updateOrder(newState)
+    console.log("newState",newState)
 
 
     if (activeOrder!.step === 'amountSet') {
@@ -453,12 +488,6 @@ bot.on('text', async ctx => {
                     ]
                 }
             })
-
-            const user = {
-                username: ctx.from.username!, 
-                address:  ctx.message.text,
-                chatId: ctx.from.id
-            }
 
             orders = orders.map((o): Order =>
                 o.orderId !== orderId 
