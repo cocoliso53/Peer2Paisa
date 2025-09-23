@@ -3,7 +3,7 @@ import path from 'path'
 dotenv.config({
   path: path.resolve(__dirname, '../../.env'),
 })
-import { Telegraf, Markup } from "telegraf";
+import { Telegraf, Markup, NarrowedContext } from "telegraf";
 import { createHash, randomUUID } from 'crypto';
 import { isAddress } from 'viem';
 import { checkAmountFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot, refundSellerFromBot } from '../utils/botSmartContractAdapter';
@@ -55,6 +55,29 @@ const s_0 = (): Order => ({
     orderId: helperCreateHash(),
 
 })
+
+type Effects = {
+    reply?: string[],
+}
+
+type EffectsResponse = {
+    reply?: number[]
+}
+
+const runEffects = async (ctx: any, effects: Effects): Promise<EffectsResponse >=> {
+    const res: EffectsResponse = {}
+    if (effects.reply) {
+        console.log("effects.reply", effects.reply)
+        res.reply = []
+        for (const i in effects.reply) {
+            console.log("msg", effects.reply[i])
+            const m = await ctx.reply(effects.reply[i])
+            res.reply.push(m.message_id)
+        }
+    }
+
+    return res
+}
 
 // Temp storage
 let users: string[] = []
@@ -117,7 +140,7 @@ bot.action(/^(sell|buy)$/, async ctx => {
     }
     
     const newOrder = s_0()
-    const dataAumentada =  deltaWrapped(newOrder, 
+    const { state:dataAumentada, effects} =  deltaWrapped(newOrder, 
         {
             event: action,
             data: {
@@ -127,7 +150,12 @@ bot.action(/^(sell|buy)$/, async ctx => {
         }
     )
     console.log('Data aumentada:', dataAumentada);
-    
+    console.log('Efectos', effects)
+
+    const { reply } = await runEffects(ctx, effects)
+
+    console.log("replyEffect", reply)
+
     if (action === 'sell') {
         order = {
             ...order,
@@ -144,7 +172,15 @@ bot.action(/^(sell|buy)$/, async ctx => {
         }
     }
 
-    const up = await updateOrder(dataAumentada)
+
+    const { state } = deltaWrapped(
+        dataAumentada,
+        {
+            event: "setLastMessageId",
+            data: { messageId: reply![0] }
+        }
+    )
+    const up = await updateOrder(state)
     console.log("dbCouch", up)
     console.log("order", order)
     orders.push(order)
@@ -442,7 +478,7 @@ bot.on('text', async ctx => {
         }
     })()
 
-    const newState = deltaWrapped(activeCouch, eventObject)
+    const { state:newState } = deltaWrapped(activeCouch, eventObject)
     await updateOrder(newState)
     console.log("newState",newState)
 

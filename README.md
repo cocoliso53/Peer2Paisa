@@ -93,17 +93,10 @@ First approach:
 
 S - states
 E - events
-T - outputs
+T - effects
 s0 - initial state
 
 state = orderState
-
-s0 = minimal Order 
-
-s0 = Order with uuid and cratedAt timestap
-Events on s0 -> sell, buy, cancel
-
-
 ### Couch DB 
 
 #### Create orders table 

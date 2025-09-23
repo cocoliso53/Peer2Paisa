@@ -77,6 +77,10 @@
 (defn effect-simple-cancel
   [_ _]
   {:reply ["Order canceled succesfully"]})
+
+(defn no-effect
+  [_ _]
+  {:no-effect nil})
   
   
 
@@ -94,7 +98,7 @@
                          :to         "waitingNewOrderAmount"}
    ["s0"
     "setLastMessageId"] {:transition set-last-message-id
-                         :effects    nil
+                         :effects    no-effect
                          :to         "s0"} ;; not sure if we need this one
    ["s0" "cancel"]      {:transition cancel-order
                          :effects    effect-simple-cancel
@@ -105,7 +109,7 @@
                          :to         "waitingSetAddress"}
    ["waitingNewOrderAmount"
     "setLastMessageId"] {:transition set-last-message-id
-                         :effects    nil
+                         :effects    no-effect
                          :to         "waitingNewOrderAmount"}
    
    ["waitingNewOrderAmount"
@@ -118,7 +122,7 @@
                          :to         "watingCounterpart"}
    ["waitingSetAddress"
     "setLastMessageId"] {:transition set-last-message-id
-                         :effects    nil
+                         :effects    no-effect
                          :to         "waitingSetAddress"}
    ["waitingSetAddress"
     "cancel"]           {:transition cancel-order
