@@ -53,7 +53,15 @@
            (if sell :seller :buyer) user
            :lastMessageId messageId)
     (assoc state
-         :error "No full user data")))
+           :error "No full user data")))
+
+(defn set-last-message-id
+  [state {{:keys [messageId]} :data}]
+  (apply assoc state
+         (if messageId
+           [:lastMessageId messageId]
+           [:error "No las message"]))) ;; do we want an error where? 
+           
 
 (defn cancel-order
   [state _]
@@ -78,31 +86,44 @@
 ;; the proper way (tbd)
 
 (def transition-table
-  {["s0" "buy"]    {:transition set-original-buyer-or-seller
-                    :effects    effect-original-buyer-or-seller
-                    :to         "waitingNewOrderAmount"}
-   ["s0" "sell"]   {:transition set-original-buyer-or-seller
-                    :effects    effect-original-buyer-or-seller
-                    :to         "waitingNewOrderAmount"}
-   ["s0" "cancel"] {:transition cancel-order
-                    :effects    effect-simple-cancel
-                    :to         "canceled"}
+  {["s0" "buy"]         {:transition set-original-buyer-or-seller
+                         :effects    effect-original-buyer-or-seller
+                         :to         "waitingNewOrderAmount"}
+   ["s0" "sell"]        {:transition set-original-buyer-or-seller
+                         :effects    effect-original-buyer-or-seller
+                         :to         "waitingNewOrderAmount"}
+   ["s0"
+    "setLastMessageId"] {:transition set-last-message-id
+                         :effects    nil
+                         :to         "s0"} ;; not sure if we need this one
+   ["s0" "cancel"]      {:transition cancel-order
+                         :effects    effect-simple-cancel
+                         :to         "canceled"}
    ["waitingNewOrderAmount"
-    "setAmount"]   {:transition set-amount-or-range
-                    :effects    identity
-                    :to         "waitingSetAddress"}
+    "setAmount"]        {:transition set-amount-or-range
+                         :effects    identity
+                         :to         "waitingSetAddress"}
    ["waitingNewOrderAmount"
-    "cancel"]      {:transition cancel-order
-                    :effects    effect-simple-cancel
-                    :to         "canceled"}
+    "setLastMessageId"] {:transition set-last-message-id
+                         :effects    nil
+                         :to         "waitingNewOrderAmount"}
+   
+   ["waitingNewOrderAmount"
+    "cancel"]           {:transition cancel-order
+                         :effects    effect-simple-cancel
+                         :to         "canceled"}
    ["waitingSetAddress"
-    "setAddress"]  {:transition set-owner-user-data
-                    :effects    identity
-                    :to         "watingCounterpart"}
+    "setAddress"]       {:transition set-owner-user-data
+                         :effects    identity
+                         :to         "watingCounterpart"}
    ["waitingSetAddress"
-    "cancel"]      {:transition cancel-order
-                    :effects    effect-simple-cancel
-                    :to         "canceled"}})
+    "setLastMessageId"] {:transition set-last-message-id
+                         :effects    nil
+                         :to         "waitingSetAddress"}
+   ["waitingSetAddress"
+    "cancel"]           {:transition cancel-order
+                         :effects    effect-simple-cancel
+                         :to         "canceled"}})
 
 (defn delta
   [{state :state :as s} {event :event :as e}]
@@ -126,6 +147,9 @@
 
 (defn ^:export delta-wrapped
   [js-state js-event]
-  (let [state (js->clj js-state :keywordize-keys true)
-        event (js->clj js-event :keywordize-keys true)]
-    (clj->js (delta state event))))
+  (let [state      (js->clj js-state :keywordize-keys true)
+        event      (js->clj js-event :keywordize-keys true)
+        next-state (delta state event)
+        effect     (omega state event)]
+    (clj->js {:state   next-state
+              :effects effect})))

@@ -228,6 +228,53 @@
                                         :user      user
                                         :messageId 1112}}])))))
 
+(deftest set-last-message-id-transition
+
+  (testing "set-last-message-id should be idempotent on state"
+    (is (= {:state         "waitingNewOrderAmount"
+            :status        "active"
+            :orderId       "orderId123"
+            :buyer         {:username "username"}
+            :participants  ["username"]
+            :sell          false
+            :lastMessageId 1111}
+           (transit-events s0 [(assoc base-event :event "buy")
+                               {:event "setLastMessageId"
+                                :data  {:messageId 1111}}])))
+
+    (is (= {:amount        "100-1000"
+            :participants  ["username"]
+            :state         "waitingSetAddress"
+            :sell          false
+            :status        "active"
+            :lastMessageId nil
+            :buyer         {:username "username"}
+            :range         true
+            :orderId       "orderId123"}
+           (transit-events s0 [(assoc base-event :event "buy")
+                               {:event "setLastMessageId"
+                                :data  {:messageId 1111}}
+                               {:event "setAmount"
+                                :data  {:text "100-1000"}}])))
+
+    (is (= {:amount        "100-1000"
+            :participants  ["username"]
+            :state         "waitingSetAddress"
+            :sell          false
+            :status        "active"
+            :lastMessageId 1112
+            :buyer         {:username "username"}
+            :range         true
+            :orderId       "orderId123"}
+           (transit-events s0 [(assoc base-event :event "buy")
+                               {:event "setLastMessageId"
+                                :data  {:messageId 1111}}
+                               {:event "setAmount"
+                                :data  {:text "100-1000"}}
+                               {:event "setLastMessageId"
+                                :data  {:messageId 1112}}])))))
+  
+
 (deftest omega-s0-effects
 
   (testing "s0 transition effects"
