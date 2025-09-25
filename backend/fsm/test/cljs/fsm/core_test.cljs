@@ -23,6 +23,7 @@
   [init-state events]
   (reduce core/delta init-state events))
 
+
 (deftest transit-events-function
   
   (testing "correct behaviour helper function"
@@ -273,7 +274,8 @@
                                 :data  {:text "100-1000"}}
                                {:event "setLastMessageId"
                                 :data  {:messageId 1112}}])))))
-  
+
+;;; Omega ;;;
 
 (deftest omega-s0-effects
 
@@ -291,6 +293,65 @@
     (is (= {:error "Invalid transition, no effect"}
            (core/omega s0
                        (assoc base-event :event "invalid"))))))
+
+(deftest omega-waitingNewOrderAmount-effects
+
+  (testing "waitingNewOrderAmount transition effects"
+    (is (= {:deleteMessage [{:chat "current"
+                             :id   1111}]
+            :reply         ["Enter address to receive funds"]}
+           (core/omega (transit-events s0 [(assoc base-event :event "buy")
+                                           {:event "setLastMessageId"
+                                            :data  {:messageId 1111}}])
+                       {:event "setAmount"
+                        :data  {:text "100-1000"}})))
+    (is (= {:deleteMessage [{:chat "current"
+                             :id   1111}]
+            :reply         ["Enter address for refund (if necessary)"]}
+           (core/omega (transit-events s0 [(assoc base-event :event "sell")
+                                           {:event "setLastMessageId"
+                                            :data  {:messageId 1111}}])
+                       {:event "setAmount"
+                        :data  {:text "100-1000"}})))))
+
+(deftest omega-waitingSetAddress-effects
+
+  (testing "waitingSetAddress-effects transition effects"
+    (is (= {:reply            ["Order created: orderId123"]
+            :deleteMessage    [{:chat "current"
+                                :id   1112}]
+            :orderBookMessage [{:text     "Buying 100"
+                                :keyboard {:text     "Take Order"
+                                           :callback "take:orderId123"}}]}
+           (core/omega (transit-events s0 [(assoc base-event :event "buy")
+                                           {:event "setLastMessageId"
+                                            :data  {:messageId 1111}}
+                                           {:event "setAmount"
+                                            :data  {:text      "100"
+                                                    :messageId 1111}}
+                                           {:event "setLastMessageId"
+                                            :data  {:messageId 1112}}])
+                       {:event "setAddress"
+                        :data  {:text "0x1231231213"
+                                :user user}})))
+    (is (= {:reply            ["Order created: orderId123"]
+            :deleteMessage    [{:chat "current"
+                                :id   1112}]
+            :orderBookMessage [{:text     "Selling 100"
+                                :keyboard {:text     "Take Order"
+                                           :callback "take:orderId123"}}]}
+           (core/omega (transit-events s0 [(assoc base-event :event "sell")
+                                           {:event "setLastMessageId"
+                                            :data  {:messageId 1111}}
+                                           {:event "setAmount"
+                                            :data  {:text      "100"
+                                                    :messageId 1111}}
+                                           {:event "setLastMessageId"
+                                            :data  {:messageId 1112}}])
+                       {:event "setAddress"
+                        :data  {:text "0x1231231213"
+                                :user user}})))))
+           
 
 (deftest delta-cancel
   (testing "cancel from s0"

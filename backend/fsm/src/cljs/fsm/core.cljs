@@ -61,14 +61,18 @@
          (if messageId
            [:lastMessageId messageId]
            [:error "No las message"]))) ;; do we want an error where? 
-           
 
 (defn cancel-order
   [state _]
   (assoc state
          :status "canceled"))
 
-;; Effects helpers
+;;; Effects helpers ;;; 
+
+(defn no-effect
+  [_ _]
+  {:no-effect true})
+
 (defn effect-original-buyer-or-seller
   [_ {event :event}]
   (let [msg (str "Enter exact amount or range (eg. 100-1000) to " event)]
@@ -78,11 +82,23 @@
   [_ _]
   {:reply ["Order canceled succesfully"]})
 
-(defn no-effect
-  [_ _]
-  {:no-effect nil})
-  
-  
+(defn effect-set-amount
+  [{lastMessageId :lastMessageId sell :sell} _]
+  (if lastMessageId
+    {:deleteMessage [{:chat "current" :id lastMessageId}]
+     :reply         [(if sell
+                       "Enter address for refund (if necessary)"
+                       "Enter address to receive funds")]}
+    {:error "No lastMessageId"}))
+
+(defn effect-set-address
+  [{:keys [sell amount orderId lastMessageId]} {{user :user text :text} :data}]
+  ;; we need to add a check for a valid address
+  {:reply            [(str "Order created: " orderId)]
+   :deleteMessage    [{:chat "current" :id lastMessageId}]
+   :orderBookMessage [{:text     (str (if sell "Selling " "Buying ") amount)
+                       :keyboard {:text     "Take Order"
+                                  :callback (str "take:" orderId)}}]})
 
 ;; Delta will be ð: SxE -> S
 ;; if the state and event are not a valid combination we will just return
@@ -105,7 +121,7 @@
                          :to         "canceled"}
    ["waitingNewOrderAmount"
     "setAmount"]        {:transition set-amount-or-range
-                         :effects    identity
+                         :effects    effect-set-amount
                          :to         "waitingSetAddress"}
    ["waitingNewOrderAmount"
     "setLastMessageId"] {:transition set-last-message-id
@@ -118,7 +134,7 @@
                          :to         "canceled"}
    ["waitingSetAddress"
     "setAddress"]       {:transition set-owner-user-data
-                         :effects    identity
+                         :effects    effect-set-address
                          :to         "watingCounterpart"}
    ["waitingSetAddress"
     "setLastMessageId"] {:transition set-last-message-id
