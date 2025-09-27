@@ -60,8 +60,20 @@
   (apply assoc state
          (if messageId
            [:lastMessageId messageId]
-           [:error "No las message"]))) ;; do we want an error where? 
+           [:error "No last message"]))) ;; do we want an error where?
 
+(defn set-last-and-orderbook-message-id
+  [state {{:keys [messageId orderMessageId]} :data}]
+  (apply assoc state
+         (if orderMessageId
+           [:lastMessageId messageId :orderMessageId orderMessageId]
+           [:error "No last message"])))
+
+(defn set-counterpat-username-chatId
+  [{sell :sell :as state} {{:keys [counterpart]} :data}]
+  (assoc state
+         (if sell :buyer :seller) counterpart))
+           
 (defn cancel-order
   [state _]
   (assoc state
@@ -99,6 +111,22 @@
    :orderBookMessage [{:text     (str (if sell "Selling " "Buying ") amount)
                        :keyboard {:text     "Take Order"
                                   :callback (str "take:" orderId)}}]})
+
+(defn effect-take-order
+  [{:keys [sell range amount buyer seller orderId]} {{:keys [takerChatId]} :data}]
+  (let [taker-message (if range
+                        (str "Select an amount between " amount)
+                        (if sell
+                          "Please enter the wallet where you want to receive the funds"
+                          "Enter address for refund (if necessary)"))]
+    {:deleteMessage [{:chat "ctx"}]
+     :answerCbQuery true
+     :sendMessage [{:chatId (:chatId (if sell seller buyer))
+                    :text (str "Order #" orderId
+                               " has been taken. Waiting for the counter"
+                               "part to enter details")}
+                   {:chatId takerChatId
+                    :text taker-message}]}))
 
 ;; Delta will be ð: SxE -> S
 ;; if the state and event are not a valid combination we will just return
@@ -141,6 +169,24 @@
                          :effects    no-effect
                          :to         "waitingSetAddress"}
    ["waitingSetAddress"
+    "cancel"]           {:transition cancel-order
+                         :effects    effect-simple-cancel
+                         :to         "canceled"}
+   ;; We might need to come up with a better way to do this transition
+   ;; next state should be determined on backend level, not front.
+   ["watingCounterpart"
+    "takeOrder"]        {:transition set-counterpat-username-chatId
+                         :effects    effect-take-order
+                         :to         "watingCounterpartAddress"}
+   ["watingCounterpart"
+    "takeOrderRange"]   {:transition set-counterpat-username-chatId
+                         :effects    effect-take-order
+                         :to         "watingCounterpartSetAmount"}
+   ["watingCounterpart"
+    "setMessagesIds"]   {:transition set-last-and-orderbook-message-id
+                         :effects    no-effect
+                         :to         "watingCounterpart"}
+   ["watingCounterpart"
     "cancel"]           {:transition cancel-order
                          :effects    effect-simple-cancel
                          :to         "canceled"}})
