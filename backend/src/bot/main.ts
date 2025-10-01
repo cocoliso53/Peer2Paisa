@@ -56,23 +56,92 @@ const s_0 = (): Order => ({
 
 })
 
+type DeleteDetails = {
+    chat: string,
+    id?: number
+}
+
+type KeyboardMessage = {
+    text: string,
+    callback: string
+}
+
+type OrderBookMessage = {
+    text: string[],
+    keyboard: KeyboardMessage
+}
+
+type SendMessageData = {
+    chatId: number,
+    text: string
+}
+
 type Effects = {
     reply?: string[],
+    deleteMessage?: DeleteDetails[] 
+    orderBookMessage?: OrderBookMessage,
+    sendMessage?: SendMessageData[],
+    anserQuery?: boolean
 }
 
 type EffectsResponse = {
     reply?: number[]
+    orderId?: number
 }
 
 const runEffects = async (ctx: any, effects: Effects): Promise<EffectsResponse >=> {
     const res: EffectsResponse = {}
     if (effects.reply) {
-        console.log("effects.reply", effects.reply)
         res.reply = []
         for (const i in effects.reply) {
-            console.log("msg", effects.reply[i])
             const m = await ctx.reply(effects.reply[i])
             res.reply.push(m.message_id)
+        }
+    }
+
+    if (effects.deleteMessage) {
+        for (const i in effects.deleteMessage) {
+            if (effects.deleteMessage[i].chat === "ctx") {
+                await ctx.telegram.deleteMessage()
+            }
+
+            const { id:lastMessageId } = effects.deleteMessage[i] 
+            await ctx.telegram.deleteMessage(ctx.chat.id, lastMessageId)
+        }
+    }
+
+    if (effects.orderBookMessage) {
+        const { text, keyboard } = effects.orderBookMessage
+        const { text:inlineText, callback} = keyboard
+
+        const orderMessage = await ctx.telegram.sendMessage(
+            channelId,
+            text,
+            {
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: inlineText, callback_data: callback}
+                        ]
+                    ]
+                }
+            }
+        )
+
+        res.orderId = orderMessage.message_id
+    }
+
+    if (effects.anserQuery) {
+        await ctx.answerCbQuery()
+    }
+
+    if (effects.sendMessage) {
+        for (const i in effects.sendMessage) {
+            const { chatId, text } = effects.sendMessage[i]
+            await ctx.telegram.sendMessage(
+                chatId,
+                text
+            )
         }
     }
 
@@ -478,15 +547,23 @@ bot.on('text', async ctx => {
         }
     })()
 
-    const { state:newState } = deltaWrapped(activeCouch, eventObject)
-    await updateOrder(newState)
-    console.log("newState",newState)
+    const { state:newState, effects } = deltaWrapped(activeCouch, eventObject)
+    const { reply } = await runEffects(ctx, effects)
+    const { state } = deltaWrapped(
+        newState,
+        {
+            event: "setLastMessageId",
+            data: { messageId: reply![0] }
+        }
+    )
+    await updateOrder(state)
+    console.log("newState",state)
 
 
     if (activeOrder!.step === 'amountSet') {
         
         const nextMessage = orderType === 'sell' ? "Enter address for refund (if necessary)" : "Enter address to receive XOC"
-        await ctx.telegram.deleteMessage(ctx.chat.id, lastMessageId!)
+        // await ctx.telegram.deleteMessage(ctx.chat.id, lastMessageId!)
         const m2 = await ctx.reply(nextMessage)
         const isRange = rangeAmount(ctx.message.text)
         
@@ -680,64 +757,78 @@ bot.action(/^take:(.+)$/, async ctx => {
     const id = ctx.match[1];
 
     const order = orders.find(o => o.orderId === id)
-    const orderId = order?.orderId
-    const orderType = order?.type
-    const amountRange = order?.range
+    const orderCouch = await getOrderById(id)
 
     const counterpart = {
-        username: ctx.from.username!,
-        chatId: ctx.from.id
+            username: ctx.from.username!,
+            chatId: ctx.from.id
     }
 
-    let takerMessage: string
+    if (order) {
+        const orderId = order?.orderId
+        const orderType = order?.type
+        const amountRange = order?.range
 
-    if (amountRange) {
-        const range = order.amount
-        takerMessage = `Select an amount between ${range}`
-        
-        orders = orders.map((o): Order =>
-            o.orderId !== orderId 
-                ? o
-                : {
-                    ...o,
-                    step: 'defineAmount',
-                    ...(orderType === "sell"
-                        ? { buyer: counterpart }
-                        : { seller:  counterpart }),
-                }
+        let takerMessage: string
+
+        if (amountRange) {
+            const range = order.amount
+            takerMessage = `Select an amount between ${range}`
+            
+            orders = orders.map((o): Order =>
+                o.orderId !== orderId 
+                    ? o
+                    : {
+                        ...o,
+                        step: 'defineAmount',
+                        ...(orderType === "sell"
+                            ? { buyer: counterpart }
+                            : { seller:  counterpart }),
+                    }
+            )
+        } else {
+            takerMessage = orderType === "sell" ? "Please enter the wallet where you want to receive XOC" : "Enter address for refund (if necessary)"
+            
+            orders = orders.map((o): Order =>
+                o.orderId !== orderId 
+                    ? o
+                    : {
+                        ...o,
+                        step: 'taken',
+                        ...(orderType === "sell"
+                            ? { buyer: counterpart }
+                            : { seller:  counterpart }),
+                    }
+            )
+        }
+
+        const orderMakerChatId = orderType === "sell" ? order?.seller?.chatId! : order?.buyer?.chatId!
+
+        await ctx.answerCbQuery();
+
+        await ctx.deleteMessage();
+
+        await ctx.telegram.sendMessage(
+            orderMakerChatId,
+            `Order #${id} has been taken. Waiting for the counter part to enter details`
         )
-    } else {
-        takerMessage = orderType === "sell" ? "Please enter the wallet where you want to receive XOC" : "Enter address for refund (if necessary)"
-        
-        orders = orders.map((o): Order =>
-            o.orderId !== orderId 
-                ? o
-                : {
-                    ...o,
-                    step: 'taken',
-                    ...(orderType === "sell"
-                        ? { buyer: counterpart }
-                        : { seller:  counterpart }),
-                }
-        )
+
+
+        await ctx.telegram.sendMessage(
+            ctx.from.id,
+            takerMessage
+        );
+    } else if (orderCouch) {
+        const amountRange = orderCouch.range
+        const event = {
+            event: amountRange ? "takeOrderRange" : "takeOrder",
+            data: { 
+                counterpart,
+                takerChatId: ctx.from.id
+            }
+        }
     }
-
-    const orderMakerChatId = orderType === "sell" ? order?.seller?.chatId! : order?.buyer?.chatId!
-
-    await ctx.answerCbQuery();
-
-    await ctx.deleteMessage();
-
-    await ctx.telegram.sendMessage(
-        orderMakerChatId,
-        `Order #${id} has been taken. Waiting for the counter part to enter details`
-    )
-
-
-    await ctx.telegram.sendMessage(
-        ctx.from.id,
-        takerMessage
-    );
+    
 })
 
 bot.on('channel_post', ctx => {

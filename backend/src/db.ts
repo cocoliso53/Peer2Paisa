@@ -1,6 +1,7 @@
 import axios from 'axios'
 import dotenv from 'dotenv'
 import path from 'path'
+import { nexilix } from 'viem/chains'
 dotenv.config({
   path: path.resolve(__dirname, '../.env'),
 })
@@ -17,12 +18,17 @@ const couch = axios.create({
 })
 
 // Assumes orders "table" exists
+// check nulls, don't like that but works for now
 export const getOrderById = async (orderId: string) => {
     try {
         const { data } = await couch.get(`/orders/${orderId}`)
+        if (data.error) {
+            console.log("No existe esa orden? ", data.error)
+            return null
+        }
         return data
     } catch {
-        return {}
+        return null
     }
 }
 
