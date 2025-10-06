@@ -233,7 +233,7 @@
   (testing "watingCounterpart transitions, take order"
     
     (is (= {:amount         "100"
-            :participants   ["username"]
+            :participants   ["username" "counterpart"]
             :state          "watingCounterpartAddress"
             :orderMessageId 501
             :sell           true
@@ -260,7 +260,7 @@
                                {:event "takeOrder"
                                 :data  {:counterpart counterpart}}])))
     (is (= {:amount         "100"
-            :participants   ["username"]
+            :participants   ["username" "counterpart"]
             :state          "watingCounterpartAddress"
             :orderMessageId 501
             :sell           false
@@ -290,7 +290,7 @@
   (testing "watingCounterpart transitions, take order range"
     
     (is (= {:amount         "100-1000"
-            :participants   ["username"]
+            :participants   ["username" "counterpart"]
             :state          "watingCounterpartSetAmount"
             :orderMessageId 501
             :sell           true
@@ -317,7 +317,7 @@
                                {:event "takeOrderRange"
                                 :data  {:counterpart counterpart}}])))
     (is (= {:amount         "100-1000"
-            :participants   ["username"]
+            :participants   ["username" "counterpart"]
             :state          "watingCounterpartSetAmount"
             :orderMessageId 501
             :sell           false
@@ -343,6 +343,108 @@
                                         :orderMessageId 501}}
                                {:event "takeOrderRange"
                                 :data  {:counterpart counterpart}}])))))
+
+(deftest delta-watingCounterpartAddress-transitions
+
+  (testing "watingCounterpartAddress transitions happy path"
+    
+    (is (= {:amount         "100"
+            :participants   ["username" "counterpart"]
+            :state          "waitingFunding"
+            :orderMessageId 501
+            :sell           true
+            :status         "active"
+            :lastMessageId  1113
+            :buyer          {:username "counterpart"
+                             :chatId   56789
+                             :address  "0x56789"}
+            :range          false
+            :seller         {:username "username"
+                             :chatId   987654
+                             :address  "0x987654"}
+            :orderId        "orderId123"}
+           (transit-events s0 [(assoc base-event :event "sell")
+                               {:event "setAmount"
+                                :data  {:text      "100"
+                                        :messageId 1111}}
+                               {:event "setAddress"
+                                :data  {:text      "0x1231231213"
+                                        :user      user
+                                        :messageId 1112}}
+                               {:event "setMessagesIds"
+                                :data  {:messageId      1113
+                                        :orderMessageId 501}}
+                               {:event "takeOrder"
+                                :data  {:counterpart counterpart}}
+                               {:event "setCounterpartAddress"
+                                :data  {:counterpart (assoc counterpart
+                                                            :address "0x56789")}}])))
+    (is (= {:amount         "100"
+            :participants   ["username" "counterpart"]
+            :state          "waitingFunding"
+            :orderMessageId 501
+            :sell           false
+            :status         "active"
+            :lastMessageId  1113
+            :buyer          {:username "username"
+                             :chatId   987654
+                             :address  "0x987654"}
+            :range          false
+            :seller         {:username "counterpart"
+                             :chatId   56789
+                             :address  "0x56789"}
+            :orderId        "orderId123"}
+           (transit-events s0 [(assoc base-event :event "buy")
+                               {:event "setAmount"
+                                :data  {:text      "100"
+                                        :messageId 1111}}
+                               {:event "setAddress"
+                                :data  {:text      "0x1231231213"
+                                        :user      user
+                                        :messageId 1112}}
+                               {:event "setMessagesIds"
+                                :data  {:messageId      1113
+                                        :orderMessageId 501}}
+                               {:event "takeOrder"
+                                :data  {:counterpart counterpart}}
+                               {:event "setCounterpartAddress"
+                                :data  {:counterpart (assoc counterpart
+                                                            :address "0x56789")}}]))))
+
+  (testing "watingCounterpartAddress transitions different counterpart"
+    
+    (is (= {:amount "100"
+            :participants ["username" "counterpart"]
+            :state "watingCounterpartAddress"
+            :orderMessageId 501
+            :sell false
+            :status "active"
+            :lastMessageId 1113
+            :error "counterpart does not match previous data"
+            :buyer {:username "username"
+                    :chatId 987654
+                    :address "0x987654"}
+            :range false
+            :seller {:username "counterpart"
+                     :chatId 56789}
+            :orderId "orderId123"}
+           (transit-events s0 [(assoc base-event :event "buy")
+                               {:event "setAmount"
+                                :data  {:text      "100"
+                                        :messageId 1111}}
+                               {:event "setAddress"
+                                :data  {:text      "0x1231231213"
+                                        :user      user
+                                        :messageId 1112}}
+                               {:event "setMessagesIds"
+                                :data  {:messageId      1113
+                                        :orderMessageId 501}}
+                               {:event "takeOrder"
+                                :data  {:counterpart counterpart}}
+                               {:event "setCounterpartAddress"
+                                :data  {:counterpart {:username "otherguy"
+                                                      :chatId   9999
+                                                      :address  "0x9999"}}}])))))
 
 (deftest set-last-message-id-transitions
 

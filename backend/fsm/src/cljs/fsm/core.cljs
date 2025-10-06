@@ -70,9 +70,24 @@
            [:error "No last message"])))
 
 (defn set-counterpat-username-chatId
-  [{sell :sell :as state} {{:keys [counterpart]} :data}]
+  [{:keys [sell participants] :as state} {{:keys [counterpart]} :data}]
   (assoc state
-         (if sell :buyer :seller) counterpart))
+         (if sell :buyer :seller) counterpart
+         :participants (conj participants (:username counterpart))))
+
+(defn set-counterpart-address
+  [{:keys [buyer seller sell] :as state} {{:keys [counterpart]} :data}]
+  ;; would need to check if address is valid
+  (let [state-counterpart (if sell buyer seller)]
+    ;; extra check to confirm we are only adding the address
+    (if (= state-counterpart
+           (dissoc counterpart :address))
+      (assoc state (if sell :buyer :seller) counterpart)
+      (assoc state :error "counterpart does not match previous data"))))
+
+(defn set-escrow-address
+  [state {{escrow :escrowAddress} :data}]
+  (assoc state :escrowAddress escrow))
            
 (defn cancel-order
   [state _]
@@ -128,6 +143,31 @@
                    {:chatId takerChatId
                     :text taker-message}]}))
 
+(defn set-counterpart-address-effect
+  [{:keys [buyer seller amount]} _]
+  {:createEscrow {:buyerAddress (:address buyer)
+                  :sellerAddress (:address seller)
+                  :amount amount}})
+
+(defn set-escrow-address-effect
+  [{:keys [buyer seller amount]} {:keys [escrow escrowUrl]}]
+  (let [escrow-url-text (str "Escrow created, click [here]("
+                             escrowUrl
+                             ") to see the details. ")]
+    {:sendMessage [{:chatId    (:chatId buyer)
+                    :parseMode "Markdown"
+                    :text      (str escrow-url-text
+                               "Wating for seller to fund escrow contract")}
+                   {:chatId    (:chatId seller)
+                    :parseMode "Markdown"
+                    ;; TODO: set currency later on
+                    :text      (str escrow-url-text
+                               "Deposit "
+                               amount
+                               " and then type /funded to continue")}
+                   {:chatId (:chatId seller)
+                    :text   escrow}]}))
+
 ;; Delta will be ð: SxE -> S
 ;; if the state and event are not a valid combination we will just return
 ;; the same state with the :error keyword, we should react to this in ts
@@ -175,6 +215,10 @@
    ;; We might need to come up with a better way to do this transition
    ;; next state should be determined on backend level, not front.
    ["watingCounterpart"
+    "setMessagesIds"]   {:transition set-last-and-orderbook-message-id
+                         :effects    no-effect
+                         :to         "watingCounterpart"}
+   ["watingCounterpart"
     "takeOrder"]        {:transition set-counterpat-username-chatId
                          :effects    effect-take-order
                          :to         "watingCounterpartAddress"}
@@ -182,14 +226,17 @@
     "takeOrderRange"]   {:transition set-counterpat-username-chatId
                          :effects    effect-take-order
                          :to         "watingCounterpartSetAmount"}
-   ["watingCounterpart"
-    "setMessagesIds"]   {:transition set-last-and-orderbook-message-id
-                         :effects    no-effect
-                         :to         "watingCounterpart"}
-   ["watingCounterpart"
-    "cancel"]           {:transition cancel-order
-                         :effects    effect-simple-cancel
-                         :to         "canceled"}})
+   
+   ;; missing cancel order logic here while on "watingCounterpart"
+   
+   ["watingCounterpartAddress"
+    "setCounterpartAddress"] {:transition set-counterpart-address
+                              :effects    set-counterpart-address-effect
+                              :to         "waitingFunding"}
+   ["waitingFunding"
+    "setEscrowAddress"]      {:transition set-escrow-address
+                              :effects    set-escrow-address-effect
+                              :to         "waitingFunding"}})
 
 (defn delta
   [{state :state :as s} {event :event :as e}]
