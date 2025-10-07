@@ -86,7 +86,7 @@
       (assoc state :error "counterpart does not match previous data"))))
 
 (defn set-escrow-address
-  [state {{escrow :escrowAddress} :data}]
+  [state {{escrow :escrow} :data}]
   (assoc state :escrowAddress escrow))
            
 (defn cancel-order
@@ -144,13 +144,17 @@
                     :text taker-message}]}))
 
 (defn set-counterpart-address-effect
-  [{:keys [buyer seller amount]} _]
-  {:createEscrow {:buyerAddress (:address buyer)
-                  :sellerAddress (:address seller)
-                  :amount amount}})
+  [{:keys [buyer seller sell amount]} {{:keys [counterpart]} :data}]
+  (let [[buyer-address
+         seller-address] (if sell
+                           [(:address counterpart) (:address seller)]
+                           [(:address buyer) (:address counterpart)])]
+    {:createEscrow {:buyerAddress  buyer-address
+                    :sellerAddress seller-address
+                    :amount        amount}}))
 
 (defn set-escrow-address-effect
-  [{:keys [buyer seller amount]} {:keys [escrow escrowUrl]}]
+  [{:keys [buyer seller amount]} {{:keys [escrow escrowUrl]} :data}]
   (let [escrow-url-text (str "Escrow created, click [here]("
                              escrowUrl
                              ") to see the details. ")]

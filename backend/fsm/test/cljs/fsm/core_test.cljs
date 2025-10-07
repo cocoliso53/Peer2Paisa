@@ -446,6 +446,46 @@
                                                       :chatId   9999
                                                       :address  "0x9999"}}}])))))
 
+(deftest delta-waitingFunding-transitions
+
+  (testing "waitingFunding transition, setEscrowAddress"
+    
+    (is (= {:amount         "100"
+            :escrowAddress  "0xescrow123"
+            :participants   ["username" "counterpart"]
+            :state          "waitingFunding"
+            :orderMessageId 501
+            :sell           true
+            :status         "active"
+            :lastMessageId  1113
+            :buyer          {:username "counterpart"
+                             :chatId   56789
+                             :address  "0x56789"}
+            :range          false
+            :seller         {:username "username"
+                             :chatId   987654
+                             :address  "0x987654"}
+            :orderId        "orderId123"}
+           (transit-events s0 [(assoc base-event :event "sell")
+                               {:event "setAmount"
+                                :data  {:text      "100"
+                                        :messageId 1111}}
+                               {:event "setAddress"
+                                :data  {:text      "0x1231231213"
+                                        :user      user
+                                        :messageId 1112}}
+                               {:event "setMessagesIds"
+                                :data  {:messageId      1113
+                                        :orderMessageId 501}}
+                               {:event "takeOrder"
+                                :data  {:counterpart counterpart}}
+                               {:event "setCounterpartAddress"
+                                :data  {:counterpart (assoc counterpart
+                                                            :address "0x56789")}}
+                               {:event "setEscrowAddress"
+                                :data  {:escrow    "0xescrow123"
+                                        :escrowUrl "escrowurl"}}])))))
+
 (deftest set-last-message-id-transitions
 
   (testing "set-last-message-id should be idempotent on state"
@@ -684,6 +724,82 @@
                        {:event "takeOrderRange"
                         :data  {:counterpart counterpart
                                 :takerChatId 56789}})))))
+
+(deftest delta-watingCounterpartAddress-effect
+
+  (testing "watingCounterpartAddress effects"
+    
+    (is (= {:createEscrow {:buyerAddress  "0x56789"
+                           :sellerAddress "0x987654"
+                           :amount        "100"}}
+           (core/omega (transit-events s0 [(assoc base-event :event "sell")
+                                           {:event "setAmount"
+                                            :data  {:text      "100"
+                                                    :messageId 1111}}
+                                           {:event "setAddress"
+                                            :data  {:text      "0x1231231213"
+                                                    :user      user
+                                                    :messageId 1112}}
+                                           {:event "setMessagesIds"
+                                            :data  {:messageId      1113
+                                                    :orderMessageId 501}}
+                                           {:event "takeOrder"
+                                            :data  {:counterpart counterpart}}])
+                       {:event "setCounterpartAddress"
+                        :data  {:counterpart (assoc counterpart
+                                                    :address "0x56789")}})))
+    (is (= {:createEscrow {:buyerAddress  "0x987654"
+                           :sellerAddress "0x56789"
+                           :amount        "100"}}
+           (core/omega (transit-events s0 [(assoc base-event :event "buy")
+                                           {:event "setAmount"
+                                            :data  {:text      "100"
+                                                    :messageId 1111}}
+                                           {:event "setAddress"
+                                            :data  {:text      "0x1231231213"
+                                                    :user      user
+                                                    :messageId 1112}}
+                                           {:event "setMessagesIds"
+                                            :data  {:messageId      1113
+                                                    :orderMessageId 501}}
+                                           {:event "takeOrder"
+                                            :data  {:counterpart counterpart}}])
+                       {:event "setCounterpartAddress"
+                        :data  {:counterpart (assoc counterpart
+                                                    :address "0x56789")}})))))
+
+(deftest delta-waitingFunding-effects
+
+  (testing "waitingFunding effects, setEscrowAddress"
+    
+    (is (= {:sendMessage [{:chatId    56789
+                           :parseMode "Markdown"
+                           :text      "Escrow created, click [here](escrowurl) to see the details. Wating for seller to fund escrow contract"}
+                          {:chatId    987654
+                           :parseMode "Markdown"
+                           :text      "Escrow created, click [here](escrowurl) to see the details. Deposit 100 and then type /funded to continue"}
+                          {:chatId 987654
+                           :text   "0xescrow123"}]}
+           (core/omega (transit-events s0 [(assoc base-event :event "sell")
+                                           {:event "setAmount"
+                                            :data  {:text      "100"
+                                                    :messageId 1111}}
+                                           {:event "setAddress"
+                                            :data  {:text      "0x1231231213"
+                                                    :user      user
+                                                    :messageId 1112}}
+                                           {:event "setMessagesIds"
+                                            :data  {:messageId      1113
+                                                    :orderMessageId 501}}
+                                           {:event "takeOrder"
+                                            :data  {:counterpart counterpart}}
+                                           {:event "setCounterpartAddress"
+                                            :data  {:counterpart (assoc counterpart
+                                                                        :address "0x56789")}}])
+                       {:event "setEscrowAddress"
+                        :data  {:escrow    "0xescrow123"
+                                :escrowUrl "escrowurl"}})))))
+  
 
 (deftest delta-cancel
   (testing "cancel from s0"
