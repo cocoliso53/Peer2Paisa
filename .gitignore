@@ -44,3 +44,4 @@ pom.xml.asc
 *#core.cljs#
 *.#core.cljs
 
+AGENTS.md

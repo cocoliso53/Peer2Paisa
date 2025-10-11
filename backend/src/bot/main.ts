@@ -86,7 +86,7 @@ type Effects = {
 
 type EffectsResponse = {
     reply?: number[]
-    orderId?: number
+    orderMessageId?: number
 }
 
 const runEffects = async (ctx: any, effects: Effects): Promise<EffectsResponse >=> {
@@ -128,7 +128,7 @@ const runEffects = async (ctx: any, effects: Effects): Promise<EffectsResponse >
             }
         )
 
-        res.orderId = orderMessage.message_id
+        res.orderMessageId = orderMessage.message_id
     }
 
     if (effects.anserQuery) {
@@ -540,20 +540,23 @@ bot.on('text', async ctx => {
                         user: user
                     }
                 }
-            case 'orderTaken': 
-                return { event: "counterpartyDetails", counterpart: { username: ctx.from.username!, chatId: ctx.from.id, address: data} }
+            case 'watingCounterpartAddress': 
+                return { event: "setCounterpartAddress", counterpart: { username: ctx.from.username!, chatId: ctx.from.id, address: data} }
             case 'defineAmount':    
                 return { event: "setAmount", data }
         }
     })()
 
     const { state:newState, effects } = deltaWrapped(activeCouch, eventObject)
-    const { reply } = await runEffects(ctx, effects)
+    const { reply, orderMessageId } = await runEffects(ctx, effects)
     const { state } = deltaWrapped(
         newState,
         {
             event: "setLastMessageId",
-            data: { messageId: reply![0] }
+            data: { 
+                messageId: reply![0],
+                orderMessageId
+             }
         }
     )
     await updateOrder(state)
@@ -759,6 +762,8 @@ bot.action(/^take:(.+)$/, async ctx => {
     const order = orders.find(o => o.orderId === id)
     const orderCouch = await getOrderById(id)
 
+    console.log("orderCouchTake", orderCouch)
+
     const counterpart = {
             username: ctx.from.username!,
             chatId: ctx.from.id
@@ -813,11 +818,11 @@ bot.action(/^take:(.+)$/, async ctx => {
             `Order #${id} has been taken. Waiting for the counter part to enter details`
         )
 
-
         await ctx.telegram.sendMessage(
             ctx.from.id,
             takerMessage
         );
+
     } else if (orderCouch) {
         const amountRange = orderCouch.range
         const event = {
@@ -827,6 +832,15 @@ bot.action(/^take:(.+)$/, async ctx => {
                 takerChatId: ctx.from.id
             }
         }
+
+        const { state, effects } = deltaWrapped(orderCouch, event)
+        await runEffects(ctx, effects)
+        
+        console.log("newStateTake", state)
+        // need to update to the same/new State
+
+
+        await updateOrder(state)
     }
     
 })
