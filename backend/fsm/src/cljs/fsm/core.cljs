@@ -202,7 +202,7 @@
 
 (defn complete-order-effect
   [{buyer :buyer seller :seller} {{explorerUrl :explorerUrl} :data}]
-  (let [successText (str "Transaction [completed](${" explorerUrl "})! "
+  (let [successText (str "Transaction [completed](" explorerUrl ")! "
                          "Thanks for using our bot!")]
     {:sendMessage [{:chatId    (:chatId buyer)
                     :text      successText
