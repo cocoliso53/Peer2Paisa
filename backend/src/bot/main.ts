@@ -3,41 +3,12 @@ import path from 'path'
 dotenv.config({
   path: path.resolve(__dirname, '../../.env'),
 })
-import { Telegraf, Markup, NarrowedContext } from "telegraf";
+import { Telegraf, Markup } from "telegraf";
 import { createHash, randomUUID } from 'crypto';
 import { isAddress } from 'viem';
 import { checkAmountFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot, refundSellerFromBot } from '../utils/botSmartContractAdapter';
-import { refundSeller } from '../escrow/main';
 import { deltaWrapped } from '../utils/cljs-wrapper'
 import { getOrderById, updateOrder, getActiveOrderByParticipant, getOrdersByParticipantAndStatus } from '../db';
-
-type Order = {
-    buyer?: {
-        username: string,
-        address?: string,
-        chatId?: number,
-        canceled?: boolean,
-    },
-    seller?: {
-        username: string,
-        address?: string,
-        chatId?: number,
-        canceled?: boolean,
-    }, 
-    orderId: string,
-    participants?: string[],
-    step?: 'amountSet' | 'addressSet' | 'watingCounterpart' | 'taken' | 'waitingFunding' | 'funded' | 'dispute' | 'done' | 'canceled' | 'defineAmount'
-    state?: 's0' // will substitute step
-    status: 'active' | 'done' | 'canceled'
-    type?: string
-    sell?: boolean // will replace type
-    amount?: string
-    lastMessageId?: number,
-    escrowAddress?: string,
-    orderMessageId?: number,
-    range?: boolean,
-    createdAt?: string,
-}
 
 const explorerBaseURL = "https://basescan.org/"
 const helperCreateHash = (): string => {
@@ -45,11 +16,7 @@ const helperCreateHash = (): string => {
     return createHash('md5').update(uuid, 'utf8').digest('base64url')
 }
 
-const rangeAmount = (input: string): boolean => {
-  return /^\d+-\d+$/.test(input);
-}
-
-const s_0 = (): Order => ({
+const s_0 = () => ({
     state: 's0',
     status: 'active',
     orderId: helperCreateHash(),
@@ -152,259 +119,182 @@ const runEffects = async (ctx: any, effects: Effects): Promise<EffectsResponse >
     return res
 }
 
-// Temp storage
-let users: string[] = []
-let orders: Order[] = []
 const channelId = Number(process.env.TELEGRAM_CHANNEL)
 const bot = new Telegraf(process.env.TELEGRAM_BOT!);
 const orderbook = process.env.ORDERBOOK_LINK
 
 
-bot.start(async (ctx) => {
-    if (ctx.from.username) {
-        users.push(ctx.from.username)
-        ctx.reply(`Welcome, use this bot to place and configure your orders. subscribe to ${orderbook} to see all active orders`)
-    } else {
-        ctx.reply("Please set a username to use the bot")
+bot.start(async ctx => {
+    if (!ctx.from.username) {
+        await ctx.reply("Please set a username to use the bot");
+        return;
     }
-})
 
-bot.command('create', ctx => {
-    const username  = ctx.from.username
+    await ctx.reply(`Welcome, use this bot to place and configure your orders. subscribe to ${orderbook} to see all active orders`);
+});
+
+bot.command('create', async ctx => {
+    const username = ctx.from.username;
+
     if (!username) {
-        ctx.reply("Can't use the bot with no username")
-    }
-    const activeUser = users.includes(username!)
-    // replace with db query should take a state/order
-    const activeOrder = orders.some(o =>
-        o.buyer?.username === username &&
-        o.seller?.username === username &&
-        o.status === 'active'
-    )
-
-    if (activeOrder) {
-        ctx.reply("You can't place a new order while you have one active")
+        await ctx.reply("Can't use the bot with no username");
+        return;
     }
 
-    if (activeUser) {
-        ctx.reply(
+    try {
+        const activeResponse = await getActiveOrderByParticipant(username);
+        const hasActiveOrder = Boolean(activeResponse?.docs?.length);
+
+        if (hasActiveOrder) {
+            await ctx.reply("You can't place a new order while you have one active");
+            return;
+        }
+
+        await ctx.reply(
             'Sell or buy?',
             Markup.inlineKeyboard([
-                [ Markup.button.callback('Sell', 'sell'), Markup.button.callback('Buy', 'buy') ]
-            ])
-        )
+                [Markup.button.callback('Sell', 'sell'), Markup.button.callback('Buy', 'buy')],
+            ]),
+        );
+    } catch (error) {
+        console.error('Unable to check active orders', error);
+        await ctx.reply('Something went wrong while checking your orders. Please try again later.');
     }
-})
+});
 
 bot.action(/^(sell|buy)$/, async ctx => {
     const action = ctx.match[1];
-    
+    const username = ctx.from.username;
+
+    if (!username) {
+        await ctx.answerCbQuery();
+        await ctx.reply("Please set a username to use the bot");
+        return;
+    }
+
     await ctx.answerCbQuery();
     await ctx.deleteMessage();
 
-    const m = await ctx.reply(`Enter exact amount or range (eg. 100-1000) to ${action} in XOC`);
-    
-    let order:Order = {
-        orderId: helperCreateHash(),
-        step: 'amountSet',
-        status: 'active',
-        lastMessageId: m.message_id,
-        type: action
-    }
-    
-    const newOrder = s_0()
-    const { state:dataAumentada, effects} =  deltaWrapped(newOrder, 
-        {
-            event: action,
-            data: {
-                username: ctx.from.username!,
-                messageId: m.message_id!
-            }
-        }
-    )
-    console.log('Data aumentada:', dataAumentada);
-    console.log('Efectos', effects)
+    const baseState = s_0();
+    const { state: nextState, effects } = deltaWrapped(baseState, {
+        event: action,
+        data: { username },
+    });
 
-    const { reply } = await runEffects(ctx, effects)
+    const { reply } = await runEffects(ctx, effects);
+    let stateToPersist = nextState;
 
-    console.log("replyEffect", reply)
+    const lastMessageId = reply?.[reply.length - 1];
 
-    if (action === 'sell') {
-        order = {
-            ...order,
-            seller: {
-                username: ctx.from.username!
-            }
-        }
-    } else if (action === 'buy') {
-        order = {
-            ...order,
-            buyer: {
-                username: ctx.from.username!
-            }
-        }
+    if (lastMessageId) {
+        const { state } = deltaWrapped(stateToPersist, {
+            event: 'setLastMessageId',
+            data: { messageId: lastMessageId },
+        });
+        stateToPersist = state;
     }
 
-
-    const { state } = deltaWrapped(
-        dataAumentada,
-        {
-            event: "setLastMessageId",
-            data: { messageId: reply![0] }
-        }
-    )
-    const up = await updateOrder(state)
-    console.log("dbCouch", up)
-    console.log("order", order)
-    orders.push(order)
+    await updateOrder(stateToPersist);
 });
 
 // NOTE:  Maybe I should use a webhook to replace this logic
 bot.command('funded', async ctx => {
-    const username = ctx.from.username!
+    const username = ctx.from.username;
 
-    const activeOrder = orders.find(o =>
-        o.seller?.username === username &&
-        o.status === 'active' &&
-        o.step === 'waitingFunding'
-    )
-    
-    const { docs } = await getOrdersByParticipantAndStatus(username, "waitingFunding")
-    const activeCouch = docs[0]
-    console.log("activeCouch",activeCouch)
-
-
-    const orderId = activeOrder?.orderId
-    const escrow = activeOrder?.escrowAddress!
-    const buyerChatId = activeOrder?.buyer?.chatId!
-    const sellerChatId = activeOrder?.seller?.chatId!
-    const buyerUsername = activeOrder?.buyer?.username
-    const sellerUsername = activeOrder?.seller?.username
-
-    const txHashCouch = await markAsFundedFromBot(activeCouch.escrowAddress)
-    const txHash = await markAsFundedFromBot(escrow)
-
-    if (txHashCouch) {
-        const { state, effects} = deltaWrapped(activeCouch, {
-            event: "escrowFunded"
-        })
-
-        console.log("FundedEscrowState", state)
-        await runEffects(ctx, effects)
-    } else {
-        const amount = activeCouch.amount
-        await ctx.telegram.sendMessage(
-            activeCouch.seller.chatId,
-            `Please confrim you deposited ${amount} XOC in the escrow address ${activeCouch.escrowAddress}`
-        )
+    if (!username) {
+        await ctx.reply("Please set a username to use the bot");
+        return;
     }
 
-    if (txHash) {
-        await ctx.telegram.sendMessage(
-            sellerChatId,
-            `Escrow funded succesfully. Contact @${buyerUsername} to agree on fiat transfer details. Type /release ONLY after you have confirmed the reception of funds`
-        )
-        await ctx.telegram.sendMessage(
-            buyerChatId,
-            `Seller has funded the escrow account. Contact @${sellerUsername} to agree on fiat transfer details`
-        )
+    try {
+        const response = await getOrdersByParticipantAndStatus(username, "waitingFunding");
+        const activeCouch = response?.docs?.[0];
 
-        orders = orders.map((o): Order =>
-                o.orderId !== orderId 
-                    ? o
-                    : {
-                        ...o,
-                        step: 'funded'
-                        }
-            )
-    } else {
-        const amount = activeOrder?.amount!
-        await ctx.telegram.sendMessage(
-            sellerChatId,
-            `Please confrim you deposited ${amount} XOC in the escrow address ${escrow}`
-        )
+        if (!activeCouch) {
+            await ctx.reply("You have no orders waiting for funding.");
+            return;
+        }
+
+        if (!activeCouch.escrowAddress) {
+            await ctx.reply("Escrow address not available yet. Please wait for the counterpart to share it.");
+            return;
+        }
+
+        const txHash = await markAsFundedFromBot(activeCouch.escrowAddress);
+
+        if (txHash) {
+            const { state, effects } = deltaWrapped(activeCouch, { event: "escrowFunded" });
+            await updateOrder(state);
+            await runEffects(ctx, effects);
+        } else if (activeCouch?.seller?.chatId) {
+            const amount = activeCouch.amount ?? "the agreed";
+            await ctx.telegram.sendMessage(
+                activeCouch.seller.chatId,
+                `Please confirm you deposited ${amount} XOC in the escrow address ${activeCouch.escrowAddress}`,
+            );
+        } else {
+            await ctx.reply("Unable to verify the escrow funding transaction. Please try again.");
+        }
+    } catch (error) {
+        console.error('Error processing /funded command', error);
+        await ctx.reply("Something went wrong while checking the escrow. Please try again later.");
     }
-
-})
+});
 
 bot.command('release', async ctx => {
-    const username = ctx.from.username!
-    const activeOrder = orders.find(o =>
-        o.seller?.username === username &&
-        o.status === 'active' &&
-        o.step === 'funded'
-    )
+    const username = ctx.from.username;
 
-    const { docs } = await getOrdersByParticipantAndStatus(username, "waitingRelease")
-    const activeCouch = docs[0]
-    console.log("activeCouch",activeCouch)
-
-    const orderId = activeOrder?.orderId
-    const escrow = activeOrder?.escrowAddress!
-    const buyerChatId = activeOrder?.buyer?.chatId!
-    const sellerChatId = activeOrder?.seller?.chatId!
-
-    const txHash = await confirmFiatReceivedFromBot(escrow)
-    const txHashCouch = await confirmFiatReceivedFromBot(activeCouch.escrowAddress)
-    const explorerUrl = explorerBaseURL + `tx/${txHash}`
-    const successMEssage = `Transaction [completed](${explorerUrl})! Thanks for using our bot!`
-
-    if (txHashCouch) {
-        const { state, effects} = deltaWrapped(activeCouch, {
-            event: "fundsReleased",
-            explorerUrl: explorerBaseURL + `tx/${txHashCouch}`
-        })
-
-        console.log("fundsReleased", state)
-        await runEffects(ctx, effects)
-    } else {
-        await ctx.telegram.sendMessage(
-            activeCouch.seller.chatId,
-            "There was an error releasing the funds. Please try again or contact support"
-        )
-        await ctx.telegram.sendMessage(
-            activeCouch.buyer.chatId,
-            "There was an error releasing the funds. Wait for the seller to release again or contact support"
-        )
+    if (!username) {
+        await ctx.reply("Please set a username to use the bot");
+        return;
     }
 
+    try {
+        const response = await getOrdersByParticipantAndStatus(username, "waitingRelease");
+        const activeCouch = response?.docs?.[0];
 
+        if (!activeCouch) {
+            await ctx.reply("You have no orders waiting for release.");
+            return;
+        }
 
-    if (txHash) {
-        await ctx.telegram.sendMessage(
-            sellerChatId,
-            successMEssage,
-            { parse_mode: 'Markdown' }
-        )
-        await ctx.telegram.sendMessage(
-            buyerChatId,
-            successMEssage,
-            { parse_mode: 'Markdown' }
-        )
-        
+        if (!activeCouch.escrowAddress) {
+            await ctx.reply("Escrow address not available yet. Please try again shortly.");
+            return;
+        }
 
-        orders = orders.map((o): Order =>
-                o.orderId !== orderId 
-                    ? o
-                    : {
-                        ...o,
-                        step: 'done',
-                        status: 'done'
-                        }
-            )
-    } else {
-        await ctx.telegram.sendMessage(
-            sellerChatId,
-            "There was an error releasing the funds. Please try again or contact support"
-        )
-        await ctx.telegram.sendMessage(
-            buyerChatId,
-            "There was an error releasing the funds. Wait for the seller to release again or contact support"
-        )
+        const txHash = await confirmFiatReceivedFromBot(activeCouch.escrowAddress);
+
+        if (txHash) {
+            const { state, effects } = deltaWrapped(activeCouch, {
+                event: "fundsReleased",
+                data: { explorerUrl: explorerBaseURL + `tx/${txHash}` },
+            });
+            await updateOrder(state);
+            await runEffects(ctx, effects);
+        } else {
+            const sellerChatId = activeCouch?.seller?.chatId;
+            const buyerChatId = activeCouch?.buyer?.chatId;
+
+            if (sellerChatId) {
+                await ctx.telegram.sendMessage(
+                    sellerChatId,
+                    "There was an error releasing the funds. Please try again or contact support",
+                );
+            }
+
+            if (buyerChatId) {
+                await ctx.telegram.sendMessage(
+                    buyerChatId,
+                    "There was an error releasing the funds. Wait for the seller to release again or contact support",
+                );
+            }
+        }
+    } catch (error) {
+        console.error('Error processing /release command', error);
+        await ctx.reply("Something went wrong while releasing the escrow. Please try again later.");
     }
-
-
-})
+});
 
 /*
 bot.command('release', async ctx => {
@@ -433,6 +323,17 @@ bot.command('help', async ctx => {
     await ctx.reply("Please contact @cuaucortes for assistance")
 })
 
+bot.command('cancel', async ctx => {
+    await ctx.reply("Cancel flow is being migrated to the new engine. Please contact support if you need to cancel an order.");
+});
+
+// Expose helpers needed once cancel flow is re-enabled.
+export const legacyCancelHelpers = {
+    checkAmountFromBot,
+    refundSellerFromBot,
+};
+
+/* Legacy cancel implementation retained for reference until the CLJS flow is ready.
 bot.command('cancel', async ctx => {
     const username = ctx.from.username!
     const activeOrder = orders.find(o =>
@@ -542,236 +443,102 @@ bot.command('cancel', async ctx => {
             }
         }
     }
-)
+});
+*/
 
 bot.on('text', async ctx => {
-    
-    const username = ctx.from.username!
-    const activeOrder = orders.find(o =>
-        (o.buyer?.username === username ||
-        o.seller?.username === username ) &&
-        o.status === 'active'
-    )
+    const username = ctx.from.username;
 
-    // Testing fsm and couchdb
-    const { docs } = await getActiveOrderByParticipant(username)
-    const activeCouch = docs[0]
-    console.log("activeCouch",activeCouch)
-
-
-    const orderId = activeOrder?.orderId
-    const lastMessageId = activeOrder?.lastMessageId
-    const orderType = activeOrder?.type
-    
-    if (!activeOrder) {
-        await ctx.reply("Something went wrong")
+    if (!username) {
+        await ctx.reply("Please set a username to use the bot");
+        return;
     }
 
-    const data = {
-        text: ctx.message.text,
+    const couchResponse = await getActiveOrderByParticipant(username);
+    const activeCouch = couchResponse?.docs?.[0];
+
+    if (!activeCouch) {
+        await ctx.reply("You have no active orders.");
+        return;
     }
 
-    const user = {
-        username: ctx.from.username!, 
-        address:  ctx.message.text,
-        chatId: ctx.from.id
-    }
+    const text = ctx.message.text;
+    const baseUser = {
+        username,
+        address: text,
+        chatId: ctx.from.id,
+    };
 
-
-    let eventObject = (() => {
+    const eventObject = (() => {
         switch (activeCouch.state) {
             case 'waitingNewOrderAmount':
-                return { event: "setAmount", data }
+                return { event: "setAmount", data: { text } };
             case 'waitingSetAddress':
-                return { 
-                    event: "setAddress", 
-                    data : {
-                        text: ctx.message.text,
-                        user: user
-                    }
+                return { event: "setAddress", data: { text, user: baseUser } };
+            case 'watingCounterpartAddress':
+                if (!isAddress(text)) {
+                    return null;
                 }
-            case 'watingCounterpartAddress': 
-                return { event: "setCounterpartAddress", data: { counterpart: { username: ctx.from.username!, 
-                                                                                chatId: ctx.from.id, 
-                                                                                address: ctx.message.text} }}
-            case 'watingCounterpartSetAmount':    
-                return { event: "setAmountCounterpart", data }
+                return {
+                    event: "setCounterpartAddress",
+                    data: { counterpart: baseUser },
+                };
+            case 'watingCounterpartSetAmount':
+                return { event: "setAmountCounterpart", data: { text } };
+            default:
+                return null;
         }
-    })()
+    })();
 
-    const { state:newState, effects } = deltaWrapped(activeCouch, eventObject)
-    const { reply, orderMessageId } = await runEffects(ctx, effects)
-
-    if ( reply || orderMessageId) {
-        const { state } = deltaWrapped(
-            newState,
-            {
-                event: "setLastMessageId",
-                data: { 
-                    messageId: reply![0],
-                    orderMessageId
-                }
-            }
-        )
-
-        await updateOrder(state)
-        console.log("newState",state)
+    if (!eventObject) {
+        if (activeCouch.state === 'watingCounterpartAddress') {
+            await ctx.reply("Invalid address, please try again");
+        }
+        return;
     }
 
-    if ( newState.state === "waitingFunding" && effects.createEscrow ) {
-        const { buyerAddress, sellerAddress, amount } = effects.createEscrow 
-        const escrowAddress = await createEscrowFromBot( sellerAddress, buyerAddress, amount)
-        const escrowURL = explorerBaseURL + `/address/${escrowAddress}`
+    const { state: newState, effects } = deltaWrapped(activeCouch, eventObject);
+    const { reply, orderMessageId } = await runEffects(ctx, effects);
 
-        const { state:escrowState, effects:escrowEffects} = deltaWrapped(newState, {
+    let stateToPersist = newState;
+
+    if (reply?.length || orderMessageId) {
+        const eventName = orderMessageId ? "setMessagesIds" : "setLastMessageId";
+        const payload: Record<string, unknown> = {};
+
+        if (reply?.length) {
+            payload.messageId = reply[0];
+        }
+        if (orderMessageId) {
+            payload.orderMessageId = orderMessageId;
+        }
+
+        const { state } = deltaWrapped(stateToPersist, {
+            event: eventName,
+            data: payload,
+        });
+        stateToPersist = state;
+    }
+
+    await updateOrder(stateToPersist);
+
+    if (stateToPersist.state === "waitingFunding" && effects.createEscrow) {
+        const { buyerAddress, sellerAddress, amount } = effects.createEscrow;
+        const escrowAddress = await createEscrowFromBot(sellerAddress, buyerAddress, amount);
+        const escrowURL = explorerBaseURL + `/address/${escrowAddress}`;
+
+        const { state: escrowState, effects: escrowEffects } = deltaWrapped(stateToPersist, {
             event: "setEscrowAddress",
             data: {
                 escrow: escrowAddress,
-                escrowUrl: escrowURL
-            }
-        })
+                escrowUrl: escrowURL,
+            },
+        });
 
-        await updateOrder(escrowState)
-        console.log("escrowState", escrowState)
-
-        await runEffects(ctx, escrowEffects)
-
+        await updateOrder(escrowState);
+        await runEffects(ctx, escrowEffects);
     }
-
-
-    if (activeOrder!.step === 'amountSet') {
-        
-        const nextMessage = orderType === 'sell' ? "Enter address for refund (if necessary)" : "Enter address to receive XOC"
-        // await ctx.telegram.deleteMessage(ctx.chat.id, lastMessageId!)
-        const m2 = await ctx.reply(nextMessage)
-        const isRange = rangeAmount(ctx.message.text)
-        
-        const updateOrders = orders.map(o => 
-            o.orderId === orderId ? {
-                ...o,
-                amount: ctx.message.text,
-                range: isRange,
-                step: "addressSet" as Order["step"],
-                lastMessageId: m2.message_id
-            } : o
-        )
-
-        orders = updateOrders
-    } else if (activeOrder!.step === 'addressSet') {
-        const makerAddress = ctx.message.text
-
-        if (isAddress(makerAddress)) {
-
-            const amount = activeOrder?.amount
-            const orderText = orderType === 'sell' ? `Selling ${amount} XOC` : `Buying ${amount} XOC`
-            await ctx.telegram.deleteMessage(ctx.chat.id, lastMessageId!)
-            const m2 = await ctx.reply(`Order created ${orderId}`,)
-
-            
-            const orderMessage = await ctx.telegram.sendMessage(
-                channelId,
-                orderText,
-            {
-                reply_markup: {
-                    inline_keyboard: [
-                        [
-                            { text: "Take Order", callback_data: `take:${orderId}`}
-                        ]
-                    ]
-                }
-            })
-
-            orders = orders.map((o): Order =>
-                o.orderId !== orderId 
-                    ? o
-                    : {
-                        ...o,
-                        step: 'watingCounterpart',
-                        orderMessageId: orderMessage.message_id,
-                        lastMessageId: m2.message_id,
-                        ...(orderType === "sell"
-                            ? { seller: user }
-                            : { buyer:  user }),
-                    }
-            )
-        } else {
-            await ctx.reply("Invalid address, please try again")
-        }
-
-        
-    } else if (activeOrder!.step === 'taken') {
-
-        if (isAddress(ctx.message.text)) {
-            
-            const counterpart = {
-                username: ctx.from.username!,
-                chatId: ctx.from.id,
-                address: ctx.message.text
-            }
-            
-            orders = orders.map((o): Order =>
-                o.orderId !== orderId 
-                    ? o
-                    : {
-                        ...o,
-                        step: "waitingFunding",
-                        ...(orderType === "sell"
-                            ? { buyer: counterpart }
-                            : { seller:  counterpart }),
-                        }
-            )
-
-            const updatedOrder = orders.find(o => orderId === o.orderId)
-            const escrowAddress = await createEscrowFromBot(updatedOrder?.seller?.address!, updatedOrder?.buyer?.address!, updatedOrder?.amount!)
-            const escrowURL = explorerBaseURL + `/address/${escrowAddress}`
-
-            orders = orders.map((o): Order =>
-                o.orderId !== orderId 
-                    ? o
-                    : {
-                        ...o,
-                        escrowAddress: escrowAddress
-                        }
-            )
-            
-
-            await ctx.telegram.sendMessage(
-                updatedOrder?.buyer?.chatId!,
-                `Escrow created, click [here](${escrowURL}) to see the details. Wating for seller to fund escrow contract`,
-                { parse_mode: 'Markdown' }
-            )
-
-            await ctx.telegram.sendMessage(
-                updatedOrder?.seller?.chatId!,
-                `Escrow created, click [here](${escrowURL}) to see the details. Deposit ${updatedOrder?.amount!} XOC and then type /funded to continue`,
-                { parse_mode: 'Markdown' }
-            )
-
-            await ctx.telegram.sendMessage(
-                updatedOrder?.seller?.chatId!,
-                ` ${escrowAddress}`
-            )
-
-
-        } else {
-            await ctx.reply("Invalid address, please try again")
-        }
-    } else if (activeOrder!.step === 'defineAmount') {
-        const nextMessage = orderType === 'sell' ? "Please enter the wallet where you want to receive XOC" : "Enter address for refund (if necessary)"
-        const m = await ctx.reply(nextMessage)
-        
-        orders = orders.map((o): Order =>
-            o.orderId !== orderId 
-                ? o
-                : {
-                    ...o,
-                    lastMessageId: m.message_id,
-                    amount: ctx.message.text,
-                    step: 'taken',
-                }
-        )
-    }
-})
+});
 
 
 /*
@@ -834,72 +601,20 @@ bot.action(/^(XOC|USDT)/, async ctx => {
 
 bot.action(/^take:(.+)$/, async ctx => {
     const id = ctx.match[1];
+    const orderCouch = await getOrderById(id);
 
-    const order = orders.find(o => o.orderId === id)
-    const orderCouch = await getOrderById(id)
-
-    console.log("orderCouchTake", orderCouch)
-
-    const counterpart = {
-            username: ctx.from.username!,
-            chatId: ctx.from.id
+    if (!orderCouch) {
+        await ctx.answerCbQuery();
+        await ctx.reply("Order not found. It might have been completed or canceled.");
+        return;
     }
 
-    if (order) {
-        const orderId = order?.orderId
-        const orderType = order?.type
-        const amountRange = order?.range
+    const counterpart = {
+        username: ctx.from.username!,
+        chatId: ctx.from.id,
+    };
 
-        let takerMessage: string
-
-        if (amountRange) {
-            const range = order.amount
-            takerMessage = `Select an amount between ${range}`
-            
-            orders = orders.map((o): Order =>
-                o.orderId !== orderId 
-                    ? o
-                    : {
-                        ...o,
-                        step: 'defineAmount',
-                        ...(orderType === "sell"
-                            ? { buyer: counterpart }
-                            : { seller:  counterpart }),
-                    }
-            )
-        } else {
-            takerMessage = orderType === "sell" ? "Please enter the wallet where you want to receive XOC" : "Enter address for refund (if necessary)"
-            
-            orders = orders.map((o): Order =>
-                o.orderId !== orderId 
-                    ? o
-                    : {
-                        ...o,
-                        step: 'taken',
-                        ...(orderType === "sell"
-                            ? { buyer: counterpart }
-                            : { seller:  counterpart }),
-                    }
-            )
-        }
-
-        const orderMakerChatId = orderType === "sell" ? order?.seller?.chatId! : order?.buyer?.chatId!
-
-        await ctx.answerCbQuery();
-
-        await ctx.deleteMessage();
-
-        await ctx.telegram.sendMessage(
-            orderMakerChatId,
-            `Order #${id} has been taken. Waiting for the counter part to enter details`
-        )
-
-        await ctx.telegram.sendMessage(
-            ctx.from.id,
-            takerMessage
-        );
-
-    } else if (orderCouch) {
+    try {
         const amountRange = orderCouch.range
         const event = {
             event: amountRange ? "takeOrderRange" : "takeOrder",
@@ -909,17 +624,14 @@ bot.action(/^take:(.+)$/, async ctx => {
             }
         }
 
-        const { state, effects } = deltaWrapped(orderCouch, event)
-        await runEffects(ctx, effects)
-        
-        console.log("newStateTake", state)
-        // need to update to the same/new State
-
-
-        await updateOrder(state)
+        const { state, effects } = deltaWrapped(orderCouch, event);
+        await runEffects(ctx, effects);
+        await updateOrder(state);
+    } catch (error) {
+        console.error(`Error while taking order ${id}`, error);
+        await ctx.reply("Something went wrong while taking the order. Please try again later.");
     }
-    
-})
+});
 
 bot.on('channel_post', ctx => {
   console.log('Channel ID:', ctx.channelPost.chat.id);
