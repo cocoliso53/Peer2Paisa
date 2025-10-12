@@ -1,0 +1,12 @@
+{:source-paths ["src/cljs" "test/cljs"]
+ :dependencies [[org.clojure/clojure "1.11.1"]
+                [org.clojure/clojurescript "1.11.60"]]
+ :builds
+ {:backend {:target    :node-library
+            :output-to "../dist/fsm-lib.js"
+            :exports   {:deltaWrapped  fsm.core/delta-wrapped}}
+  :test    {:target    :node-test
+            :output-to "target/node-tests.js"
+            :entries   [fsm.core-test]
+            :autorun   true
+            :ns-regexp "-test$"}}}
