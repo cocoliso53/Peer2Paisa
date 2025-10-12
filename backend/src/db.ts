@@ -82,5 +82,30 @@ export const getActiveOrderByParticipant = async (username: string) => {
     }
 }
 
+export const getOrdersByParticipantAndStatus = async (username: string, status: string) => {
+    try {
+        const { data } = await couch.post('/orders/_find', {
+            selector: {
+                status,
+                participants: { $all: [username] }
+            },
+        })
+
+        return data
+    } catch (err) {
+        if (axios.isAxiosError(err)) {
+            console.error('CouchDB request failed:', {
+                status: err.response?.status,
+                data: err.response?.data,
+                message: err.message,
+                url: err.config?.url,
+                method: err.config?.method,
+            });
+        } else {
+            console.error('Unexpected error:', err);
+        }
+    }
+}
+
 // DELETE curl command
 // curl -u user:pass -X DELETE   "http://127.0.0.1:5984/orders/GRBq2WvyoGXBwXJOwaqfrg?rev=1-eaf7143c0f911dfbf544a161e4bd1eac"

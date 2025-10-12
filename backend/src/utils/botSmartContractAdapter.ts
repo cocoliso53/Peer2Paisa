@@ -27,9 +27,9 @@ export const confirmFiatReceivedFromBot = async (escrowAddress: string) =>  {
     }
 }
 
-export  const refundSellerFromBot = async (escrowAddrress: string) => {
+export  const refundSellerFromBot = async (escrowAddress: string) => {
     try {
-        const txHash = await refundSeller(escrowAddrress)
+        const txHash = await refundSeller(escrowAddress)
         return txHash
     } catch (error) {
         console.log("Error refundSellerFromBot", error)

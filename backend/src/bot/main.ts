@@ -9,7 +9,7 @@ import { isAddress } from 'viem';
 import { checkAmountFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot, refundSellerFromBot } from '../utils/botSmartContractAdapter';
 import { refundSeller } from '../escrow/main';
 import { deltaWrapped } from '../utils/cljs-wrapper'
-import { getOrderById, updateOrder, getActiveOrderByParticipant } from '../db';
+import { getOrderById, updateOrder, getActiveOrderByParticipant, getOrdersByParticipantAndStatus } from '../db';
 
 type Order = {
     buyer?: {
@@ -73,7 +73,8 @@ type OrderBookMessage = {
 
 type SendMessageData = {
     chatId: number,
-    text: string
+    text: string,
+    parseMode?: string
 }
 
 type Effects = {
@@ -81,7 +82,7 @@ type Effects = {
     deleteMessage?: DeleteDetails[] 
     orderBookMessage?: OrderBookMessage,
     sendMessage?: SendMessageData[],
-    anserQuery?: boolean
+    answerQuery?: boolean,
 }
 
 type EffectsResponse = {
@@ -91,6 +92,7 @@ type EffectsResponse = {
 
 const runEffects = async (ctx: any, effects: Effects): Promise<EffectsResponse >=> {
     const res: EffectsResponse = {}
+
     if (effects.reply) {
         res.reply = []
         for (const i in effects.reply) {
@@ -131,18 +133,20 @@ const runEffects = async (ctx: any, effects: Effects): Promise<EffectsResponse >
         res.orderMessageId = orderMessage.message_id
     }
 
-    if (effects.anserQuery) {
+    if (effects.answerQuery) {
         await ctx.answerCbQuery()
     }
 
     if (effects.sendMessage) {
-        for (const i in effects.sendMessage) {
-            const { chatId, text } = effects.sendMessage[i]
-            await ctx.telegram.sendMessage(
-                chatId,
-                text
+        await Promise.all(
+            effects.sendMessage.map(({ chatId, text, parseMode }) =>
+                ctx.telegram.sendMessage(
+                    chatId,
+                    text,
+                    parseMode ? { parse_mode: parseMode } : undefined
+                )
             )
-        }
+        );
     }
 
     return res
@@ -258,11 +262,17 @@ bot.action(/^(sell|buy)$/, async ctx => {
 // NOTE:  Maybe I should use a webhook to replace this logic
 bot.command('funded', async ctx => {
     const username = ctx.from.username!
+
     const activeOrder = orders.find(o =>
         o.seller?.username === username &&
         o.status === 'active' &&
         o.step === 'waitingFunding'
     )
+    
+    const { docs } = await getOrdersByParticipantAndStatus(username, "waitingFunding")
+    const activeCouch = docs[0]
+    console.log("activeCouch",activeCouch)
+
 
     const orderId = activeOrder?.orderId
     const escrow = activeOrder?.escrowAddress!
@@ -271,9 +281,23 @@ bot.command('funded', async ctx => {
     const buyerUsername = activeOrder?.buyer?.username
     const sellerUsername = activeOrder?.seller?.username
 
+    const txHashCouch = await markAsFundedFromBot(activeCouch.escrowAddress)
     const txHash = await markAsFundedFromBot(escrow)
 
-    
+    if (txHashCouch) {
+        const { state, effects} = deltaWrapped(activeCouch, {
+            event: "escrowFunded"
+        })
+
+        console.log("FundedEscrowState", state)
+        await runEffects(ctx, effects)
+    } else {
+        const amount = activeCouch.amount
+        await ctx.telegram.sendMessage(
+            activeCouch.seller.chatId,
+            `Please confrim you deposited ${amount} XOC in the escrow address ${activeCouch.escrowAddress}`
+        )
+    }
 
     if (txHash) {
         await ctx.telegram.sendMessage(
@@ -311,14 +335,40 @@ bot.command('release', async ctx => {
         o.step === 'funded'
     )
 
+    const { docs } = await getOrdersByParticipantAndStatus(username, "waitingRelease")
+    const activeCouch = docs[0]
+    console.log("activeCouch",activeCouch)
+
     const orderId = activeOrder?.orderId
     const escrow = activeOrder?.escrowAddress!
     const buyerChatId = activeOrder?.buyer?.chatId!
     const sellerChatId = activeOrder?.seller?.chatId!
 
     const txHash = await confirmFiatReceivedFromBot(escrow)
+    const txHashCouch = await confirmFiatReceivedFromBot(activeCouch.escrowAddress)
     const explorerUrl = explorerBaseURL + `tx/${txHash}`
     const successMEssage = `Transaction [completed](${explorerUrl})! Thanks for using our bot!`
+
+    if (txHashCouch) {
+        const { state, effects} = deltaWrapped(activeCouch, {
+            event: "fundsReleased",
+            explorerUrl: explorerBaseURL + `tx/${txHashCouch}`
+        })
+
+        console.log("fundsReleased", state)
+        await runEffects(ctx, effects)
+    } else {
+        await ctx.telegram.sendMessage(
+            activeCouch.seller.chatId,
+            "There was an error releasing the funds. Please try again or contact support"
+        )
+        await ctx.telegram.sendMessage(
+            activeCouch.buyer.chatId,
+            "There was an error releasing the funds. Wait for the seller to release again or contact support"
+        )
+    }
+
+
 
     if (txHash) {
         await ctx.telegram.sendMessage(
@@ -541,26 +591,52 @@ bot.on('text', async ctx => {
                     }
                 }
             case 'watingCounterpartAddress': 
-                return { event: "setCounterpartAddress", counterpart: { username: ctx.from.username!, chatId: ctx.from.id, address: data} }
-            case 'defineAmount':    
-                return { event: "setAmount", data }
+                return { event: "setCounterpartAddress", data: { counterpart: { username: ctx.from.username!, 
+                                                                                chatId: ctx.from.id, 
+                                                                                address: ctx.message.text} }}
+            case 'watingCounterpartSetAmount':    
+                return { event: "setAmountCounterpart", data }
         }
     })()
 
     const { state:newState, effects } = deltaWrapped(activeCouch, eventObject)
     const { reply, orderMessageId } = await runEffects(ctx, effects)
-    const { state } = deltaWrapped(
-        newState,
-        {
-            event: "setLastMessageId",
-            data: { 
-                messageId: reply![0],
-                orderMessageId
-             }
-        }
-    )
-    await updateOrder(state)
-    console.log("newState",state)
+
+    if ( reply || orderMessageId) {
+        const { state } = deltaWrapped(
+            newState,
+            {
+                event: "setLastMessageId",
+                data: { 
+                    messageId: reply![0],
+                    orderMessageId
+                }
+            }
+        )
+
+        await updateOrder(state)
+        console.log("newState",state)
+    }
+
+    if ( newState.state === "waitingFunding" && effects.createEscrow ) {
+        const { buyerAddress, sellerAddress, amount } = effects.createEscrow 
+        const escrowAddress = await createEscrowFromBot( sellerAddress, buyerAddress, amount)
+        const escrowURL = explorerBaseURL + `/address/${escrowAddress}`
+
+        const { state:escrowState, effects:escrowEffects} = deltaWrapped(newState, {
+            event: "setEscrowAddress",
+            data: {
+                escrow: escrowAddress,
+                escrowUrl: escrowURL
+            }
+        })
+
+        await updateOrder(escrowState)
+        console.log("escrowState", escrowState)
+
+        await runEffects(ctx, escrowEffects)
+
+    }
 
 
     if (activeOrder!.step === 'amountSet') {
