@@ -525,6 +525,13 @@ bot.on('text', async ctx => {
     if (stateToPersist.state === "waitingFunding" && effects.createEscrow) {
         const { buyerAddress, sellerAddress, amount } = effects.createEscrow;
         const escrowAddress = await createEscrowFromBot(sellerAddress, buyerAddress, amount);
+
+        if (!escrowAddress) {
+            console.error("Failed to create escrow for order:", stateToPersist.orderId);
+            await ctx.reply("Sorry, we couldn't create the escrow contract. Please contact support.");
+            return;
+        }
+
         const escrowURL = explorerBaseURL + `/address/${escrowAddress}`;
 
         const { state: escrowState, effects: escrowEffects } = deltaWrapped(stateToPersist, {
