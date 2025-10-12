@@ -316,6 +316,7 @@
                                         :orderMessageId 501}}
                                {:event "takeOrderRange"
                                 :data  {:counterpart counterpart}}])))
+    
     (is (= {:amount         "100-1000"
             :participants   ["username" "counterpart"]
             :state          "watingCounterpartSetAmount"
@@ -411,6 +412,76 @@
                                 :data  {:counterpart (assoc counterpart
                                                             :address "0x56789")}}]))))
 
+  (testing "watingCounterpartAddress with watingCounterpartSetAmount transitions"
+    
+    (is (= {:amount         "500"
+            :participants   ["username" "counterpart"]
+            :state          "waitingFunding"
+            :orderMessageId 501
+            :sell           true
+            :status         "active"
+            :lastMessageId  1113
+            :buyer          {:username "counterpart"
+                             :chatId   56789
+                             :address  "0x56789"}
+            :range          true
+            :seller         {:username "username"
+                             :chatId   987654
+                             :address  "0x987654"}
+            :orderId        "orderId123"}
+           (transit-events s0 [(assoc base-event :event "sell")
+                               {:event "setAmount"
+                                :data  {:text      "100-1000"
+                                        :messageId 1111}}
+                               {:event "setAddress"
+                                :data  {:text      "0x1231231213"
+                                        :user      user
+                                        :messageId 1112}}
+                               {:event "setMessagesIds"
+                                :data  {:messageId      1113
+                                        :orderMessageId 501}}
+                               {:event "takeOrderRange"
+                                :data  {:counterpart counterpart}}
+                               {:event "setAmountCounterpart"
+                                :data  {:text "500"}}
+                               {:event "setCounterpartAddress"
+                                :data  {:counterpart (assoc counterpart
+                                                            :address "0x56789")}}])))
+    
+    (is (= {:amount         "500"
+            :participants   ["username" "counterpart"]
+            :state          "waitingFunding"
+            :orderMessageId 501
+            :sell           false
+            :status         "active"
+            :lastMessageId  1113
+            :buyer          {:username "username"
+                             :chatId   987654
+                             :address  "0x987654"}
+            :range          true
+            :seller         {:username "counterpart"
+                             :chatId   56789
+                             :address  "0x56789"}
+            :orderId        "orderId123"}
+           (transit-events s0 [(assoc base-event :event "buy")
+                               {:event "setAmount"
+                                :data  {:text      "100-1000"
+                                        :messageId 1111}}
+                               {:event "setAddress"
+                                :data  {:text      "0x1231231213"
+                                        :user      user
+                                        :messageId 1112}}
+                               {:event "setMessagesIds"
+                                :data  {:messageId      1113
+                                        :orderMessageId 501}}
+                               {:event "takeOrderRange"
+                                :data  {:counterpart counterpart}}
+                               {:event "setAmountCounterpart"
+                                :data  {:text "500"}}
+                               {:event "setCounterpartAddress"
+                                :data  {:counterpart (assoc counterpart
+                                                            :address "0x56789")}}]))))
+
   (testing "watingCounterpartAddress transitions different counterpart"
     
     (is (= {:amount "100"
@@ -484,7 +555,90 @@
                                                             :address "0x56789")}}
                                {:event "setEscrowAddress"
                                 :data  {:escrow    "0xescrow123"
-                                        :escrowUrl "escrowurl"}}])))))
+                                        :escrowUrl "escrowurl"}}]))))
+
+  (testing "waitingFunding transition, escrowfunded"
+    
+    (is (= {:amount         "100"
+            :escrowAddress  "0xescrow123"
+            :participants   ["username" "counterpart"]
+            :state          "waitingRelease"
+            :orderMessageId 501
+            :sell           true
+            :status         "active"
+            :lastMessageId  1113
+            :buyer          {:username "counterpart"
+                             :chatId   56789
+                             :address  "0x56789"}
+            :range          false
+            :seller         {:username "username"
+                             :chatId   987654
+                             :address  "0x987654"}
+            :orderId        "orderId123"}
+           (transit-events s0 [(assoc base-event :event "sell")
+                               {:event "setAmount"
+                                :data  {:text      "100"
+                                        :messageId 1111}}
+                               {:event "setAddress"
+                                :data  {:text      "0x1231231213"
+                                        :user      user
+                                        :messageId 1112}}
+                               {:event "setMessagesIds"
+                                :data  {:messageId      1113
+                                        :orderMessageId 501}}
+                               {:event "takeOrder"
+                                :data  {:counterpart counterpart}}
+                               {:event "setCounterpartAddress"
+                                :data  {:counterpart (assoc counterpart
+                                                            :address "0x56789")}}
+                               {:event "setEscrowAddress"
+                                :data  {:escrow    "0xescrow123"
+                                        :escrowUrl "escrowurl"}}
+                               {:event "escrowFunded"
+                                :data  {}}])))))
+
+(deftest delta-completed-order-transition
+  (testing "completed-order transition"
+    
+    (is (= {:amount         "100"
+            :escrowAddress  "0xescrow123"
+            :participants   ["username" "counterpart"]
+            :state          "finished"
+            :orderMessageId 501
+            :sell           true
+            :status         "done"
+            :lastMessageId  1113
+            :buyer          {:username "counterpart"
+                             :chatId   56789
+                             :address  "0x56789"}
+            :range          false
+            :seller         {:username "username"
+                             :chatId   987654
+                             :address  "0x987654"}
+            :orderId        "orderId123"}
+           (transit-events s0 [(assoc base-event :event "sell")
+                               {:event "setAmount"
+                                :data  {:text      "100"
+                                        :messageId 1111}}
+                               {:event "setAddress"
+                                :data  {:text      "0x1231231213"
+                                        :user      user
+                                        :messageId 1112}}
+                               {:event "setMessagesIds"
+                                :data  {:messageId      1113
+                                        :orderMessageId 501}}
+                               {:event "takeOrder"
+                                :data  {:counterpart counterpart}}
+                               {:event "setCounterpartAddress"
+                                :data  {:counterpart (assoc counterpart
+                                                            :address "0x56789")}}
+                               {:event "setEscrowAddress"
+                                :data  {:escrow    "0xescrow123"
+                                        :escrowUrl "escrowurl"}}
+                               {:event "escrowFunded"
+                                :data  {}}
+                               {:event "fundsReleased"
+                                :data {:explorerUrl "explorerUrl"}}])))))
 
 (deftest set-last-message-id-transitions
 
@@ -725,7 +879,7 @@
                         :data  {:counterpart counterpart
                                 :takerChatId 56789}})))))
 
-(deftest delta-watingCounterpartAddress-effect
+(deftest omega-watingCounterpartAddress-effect
 
   (testing "watingCounterpartAddress effects"
     
@@ -768,7 +922,7 @@
                         :data  {:counterpart (assoc counterpart
                                                     :address "0x56789")}})))))
 
-(deftest delta-waitingFunding-effects
+(deftest omega-waitingFunding-effects
 
   (testing "waitingFunding effects, setEscrowAddress"
     
@@ -798,13 +952,91 @@
                                                                         :address "0x56789")}}])
                        {:event "setEscrowAddress"
                         :data  {:escrow    "0xescrow123"
-                                :escrowUrl "escrowurl"}})))))
-  
+                                :escrowUrl "escrowurl"}}))))
 
-(deftest delta-cancel
-  (testing "cancel from s0"
-    (let [state {:state "s0"}
-          event {:event "cancel"}
-          new-state (core/delta state event)]
-      (is (= "canceled" (:state new-state)))
-      (is (= "canceled" (:status new-state))))))
+  (testing "waitingFunding transition, escrowfunded"
+    
+    (is (= {:sendMessage [{:chatId 987654
+                           :text   "Escrow funded succesfully. Contact @counterpart to agree on fiat transfer details. Type /release ONLY after you have confirmed the reception of funds"}
+                          {:chatId 56789
+                           :text   "Seller has funded the escrow account. Contact @username to agree on fiat transfer details"}]}
+           (core/omega (transit-events s0 [(assoc base-event :event "sell")
+                                           {:event "setAmount"
+                                            :data  {:text      "100"
+                                                    :messageId 1111}}
+                                           {:event "setAddress"
+                                            :data  {:text      "0x1231231213"
+                                                    :user      user
+                                                    :messageId 1112}}
+                                           {:event "setMessagesIds"
+                                            :data  {:messageId      1113
+                                                    :orderMessageId 501}}
+                                           {:event "takeOrder"
+                                            :data  {:counterpart counterpart}}
+                                           {:event "setCounterpartAddress"
+                                            :data  {:counterpart (assoc counterpart
+                                                                        :address "0x56789")}}
+                                           {:event "setEscrowAddress"
+                                            :data  {:escrow    "0xescrow123"
+                                                    :escrowUrl "escrowurl"}}])
+                       {:event "escrowFunded"
+                        :data  {}})))
+
+    (is (= {:sendMessage [{:chatId 56789
+                           :text   "Escrow funded succesfully. Contact @username to agree on fiat transfer details. Type /release ONLY after you have confirmed the reception of funds"}
+                          {:chatId 987654
+                           :text   "Seller has funded the escrow account. Contact @counterpart to agree on fiat transfer details"}]}
+           (core/omega (transit-events s0 [(assoc base-event :event "buy")
+                                           {:event "setAmount"
+                                            :data  {:text      "100"
+                                                    :messageId 1111}}
+                                           {:event "setAddress"
+                                            :data  {:text      "0x1231231213"
+                                                    :user      user
+                                                    :messageId 1112}}
+                                           {:event "setMessagesIds"
+                                            :data  {:messageId      1113
+                                                    :orderMessageId 501}}
+                                           {:event "takeOrder"
+                                            :data  {:counterpart counterpart}}
+                                           {:event "setCounterpartAddress"
+                                            :data  {:counterpart (assoc counterpart
+                                                                        :address "0x56789")}}
+                                           {:event "setEscrowAddress"
+                                            :data  {:escrow    "0xescrow123"
+                                                    :escrowUrl "escrowurl"}}])
+                       {:event "escrowFunded"
+                        :data  {}})))))
+
+(deftest omega-completed-order-effect
+  (testing "completed-order effect"
+    
+    (is (= {:sendMessage [{:chatId 56789
+                           :text "Transaction [completed](${explorerUrl})! Thanks for using our bot!"
+                           :parseMode "Markdown"}
+                          {:chatId 987654
+                           :text "Transaction [completed](${explorerUrl})! Thanks for using our bot!"
+                           :parseMode "Markdown"}]}
+           (core/omega (transit-events s0 [(assoc base-event :event "sell")
+                               {:event "setAmount"
+                                :data  {:text      "100"
+                                        :messageId 1111}}
+                               {:event "setAddress"
+                                :data  {:text      "0x1231231213"
+                                        :user      user
+                                        :messageId 1112}}
+                               {:event "setMessagesIds"
+                                :data  {:messageId      1113
+                                        :orderMessageId 501}}
+                               {:event "takeOrder"
+                                :data  {:counterpart counterpart}}
+                               {:event "setCounterpartAddress"
+                                :data  {:counterpart (assoc counterpart
+                                                            :address "0x56789")}}
+                               {:event "setEscrowAddress"
+                                :data  {:escrow    "0xescrow123"
+                                        :escrowUrl "escrowurl"}}
+                               {:event "escrowFunded"
+                                :data  {}}])
+                       {:event "fundsReleased"
+                                :data {:explorerUrl "explorerUrl"}})))))

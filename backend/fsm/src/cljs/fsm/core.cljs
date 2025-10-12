@@ -75,6 +75,12 @@
          (if sell :buyer :seller) counterpart
          :participants (conj participants (:username counterpart))))
 
+(defn set-counterpart-amount
+  [{amount :amount :as state} {{text :text} :data}]
+  ;; TODO: we would need to check if text is a valid amount
+  ;; and if it is an amount within the defined amount range
+  (assoc state :amount text))
+
 (defn set-counterpart-address
   [{:keys [buyer seller sell] :as state} {{:keys [counterpart]} :data}]
   ;; would need to check if address is valid
@@ -88,6 +94,11 @@
 (defn set-escrow-address
   [state {{escrow :escrow} :data}]
   (assoc state :escrowAddress escrow))
+
+(defn complete-order
+  [state _]
+  (assoc state
+         :status "done"))
            
 (defn cancel-order
   [state _]
@@ -143,6 +154,12 @@
                    {:chatId takerChatId
                     :text taker-message}]}))
 
+(defn effect-set-counterpart-amount
+  [{sell :sell :as state} _]
+  {:reply [(if sell
+             "Please enter the wallet where you want to the funds"
+             "Enter address for refund (if necessary)")]})
+
 (defn set-counterpart-address-effect
   [{:keys [buyer seller sell amount]} {{:keys [counterpart]} :data}]
   (let [[buyer-address
@@ -161,16 +178,38 @@
     {:sendMessage [{:chatId    (:chatId buyer)
                     :parseMode "Markdown"
                     :text      (str escrow-url-text
-                               "Wating for seller to fund escrow contract")}
+                                    "Wating for seller to fund escrow contract")}
                    {:chatId    (:chatId seller)
                     :parseMode "Markdown"
                     ;; TODO: set currency later on
                     :text      (str escrow-url-text
-                               "Deposit "
-                               amount
-                               " and then type /funded to continue")}
+                                    "Deposit "
+                                    amount
+                                    " and then type /funded to continue")}
                    {:chatId (:chatId seller)
                     :text   escrow}]}))
+
+(defn escrow-funded-effect
+  [{:keys [buyer seller]} _]
+  {:sendMessage [{:chatId (:chatId seller)
+                  :text (str "Escrow funded succesfully. Contact @" (:username buyer)
+                             " to agree on fiat transfer details. Type /release "
+                             "ONLY after you have confirmed the reception of funds")}
+                 {:chatId (:chatId buyer)
+                  :text (str "Seller has funded the escrow account. Contact @"
+                             (:username seller) " to agree on fiat transfer"
+                             " details")}]})
+
+(defn complete-order-effect
+  [{buyer :buyer seller :seller} {{explorerUrl :explorerUrl} :data}]
+  (let [successText (str "Transaction [completed](${" explorerUrl "})! "
+                         "Thanks for using our bot!")]
+    {:sendMessage [{:chatId    (:chatId buyer)
+                    :text      successText
+                    :parseMode "Markdown"}
+                   {:chatId    (:chatId seller)
+                    :text      successText
+                    :parseMode "Markdown"}]}))
 
 ;; Delta will be ð: SxE -> S
 ;; if the state and event are not a valid combination we will just return
@@ -178,9 +217,10 @@
 ;; the proper way (tbd)
 
 (def transition-table
-  {["s0" "buy"]         {:transition set-original-buyer-or-seller
-                         :effects    effect-original-buyer-or-seller
-                         :to         "waitingNewOrderAmount"}
+  {["s0" "buy"] {:transition set-original-buyer-or-seller
+                 :effects    effect-original-buyer-or-seller
+                 :to         "waitingNewOrderAmount"}
+   
    ["s0" "sell"]        {:transition set-original-buyer-or-seller
                          :effects    effect-original-buyer-or-seller
                          :to         "waitingNewOrderAmount"}
@@ -218,29 +258,47 @@
                          :to         "canceled"}
    ;; We might need to come up with a better way to do this transition
    ;; next state should be determined on backend level, not front.
-   ["watingCounterpart"
-    "setMessagesIds"]   {:transition set-last-and-orderbook-message-id
-                         :effects    no-effect
-                         :to         "watingCounterpart"}
-   ["watingCounterpart"
-    "takeOrder"]        {:transition set-counterpat-username-chatId
-                         :effects    effect-take-order
-                         :to         "watingCounterpartAddress"}
-   ["watingCounterpart"
-    "takeOrderRange"]   {:transition set-counterpat-username-chatId
-                         :effects    effect-take-order
-                         :to         "watingCounterpartSetAmount"}
+
+   ;; missing cancel order logic here while from here on
    
-   ;; missing cancel order logic here while on "watingCounterpart"
+   ["watingCounterpart"
+    "setMessagesIds"] {:transition set-last-and-orderbook-message-id
+                       :effects    no-effect
+                       :to         "watingCounterpart"}
+   ["watingCounterpart"
+    "takeOrder"]      {:transition set-counterpat-username-chatId
+                       :effects    effect-take-order
+                       :to         "watingCounterpartAddress"}
+   ["watingCounterpart"
+    "takeOrderRange"] {:transition set-counterpat-username-chatId
+                       :effects    effect-take-order
+                       :to         "watingCounterpartSetAmount"}
+
+   ;; This should go first in case it's needed
+
+   ["watingCounterpartSetAmount"
+    "setAmountCounterpart"] {:transition set-counterpart-amount
+                             :effects    effect-set-counterpart-amount
+                             :to         "watingCounterpartAddress"}
    
    ["watingCounterpartAddress"
     "setCounterpartAddress"] {:transition set-counterpart-address
                               :effects    set-counterpart-address-effect
                               :to         "waitingFunding"}
+   
    ["waitingFunding"
-    "setEscrowAddress"]      {:transition set-escrow-address
-                              :effects    set-escrow-address-effect
-                              :to         "waitingFunding"}})
+    "setEscrowAddress"] {:transition set-escrow-address
+                         :effects    set-escrow-address-effect
+                         :to         "waitingFunding"}
+
+   ["waitingFunding"
+    "escrowFunded"]  {:transition identity
+                      :effects    escrow-funded-effect
+                      :to         "waitingRelease"}
+   ["waitingRelease"
+    "fundsReleased"] {:transition complete-order
+                      :effects    complete-order-effect
+                      :to         "finished"}})
 
 (defn delta
   [{state :state :as s} {event :event :as e}]
