@@ -103,3 +103,12 @@ state = orderState
 `curl -X PUT http://127.0.0.1:5984/orders`
 
 
+## TODO
+
+- Finish migrating the cancel flow into the new CLJS FSM so both buyer and seller can cancel after an order is taken, including triggering refunds when escrows hold funds.
+- Replace the manual `/funded` and `/release` polling commands with webhook/event-driven updates that react to on-chain escrow events automatically.
+- Enforce proper validation (amount ranges, wallet addresses, currency labels) inside the FSM so taker inputs are checked and notifications mention the correct asset.
+- Re-enable the multi-asset release flow (XOC vs USDT) by wiring the `swapEscrow` helper and associated Telegram prompts back into the new engine.
+- Provide real TypeScript definitions for the FSM interop (`deltaWrapped` state/event types) instead of the current placeholder declarations.
+- Introduce concrete CouchDB order types in `backend/src/db.ts` to replace `any` usage and make persisted order fields explicit.
+- Move chain/token configuration and decimal precision out of hard-coded constants so different deployments can choose assets without code edits.

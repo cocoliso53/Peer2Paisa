@@ -99,11 +99,18 @@
   [state _]
   (assoc state
          :status "done"))
+
+(defn order-created-seller-cancel
+  "Once the order has been listed on the orderbook
+   TODO seller check must be done on the outside bit?"
+  [_ ]
+  )
            
 (defn cancel-order
   [state _]
   (assoc state
          :status "canceled"))
+  
 
 ;;; Effects helpers ;;; 
 
@@ -117,8 +124,10 @@
     {:reply [msg]}))
 
 (defn effect-simple-cancel
-  [_ _]
-  {:reply ["Order canceled succesfully"]})
+  [{orderMessageId :orderMessageId} _]
+  (merge {:reply ["Order canceled succesfully"]}
+         (when orderMessageId
+           {:deleteMessage [{:chat "channel" :id lastMessageId}]})))
 
 (defn effect-set-amount
   [{lastMessageId :lastMessageId sell :sell} _]
