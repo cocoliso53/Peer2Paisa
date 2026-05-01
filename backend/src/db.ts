@@ -81,6 +81,22 @@ export const getActiveOrderByParticipant = async (username: string) => {
     }
 }
 
+export const getActiveOrderByParticipantAndState = async (username: string, state: string) => {
+    try {
+        const { data } = await couch.post('/orders/_find', {
+            selector: {
+                status: 'active',
+                state,
+                participants: { $all: [username] }
+            },
+        })
+
+        return data
+    } catch (err) {
+        handleCouchError(err, `getActiveOrderByParticipantAndState(${username}, ${state})`)
+    }
+}
+
 export const getOrdersByParticipantAndStatus = async (username: string, status: string) => {
     try {
         const { data } = await couch.post('/orders/_find', {

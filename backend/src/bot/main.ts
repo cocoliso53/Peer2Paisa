@@ -5,10 +5,9 @@ dotenv.config({
 })
 import { Telegraf, Markup } from "telegraf";
 import { createHash, randomUUID } from 'crypto';
-import { isAddress } from 'viem';
-import { checkAmountFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot, refundSellerFromBot } from '../utils/botSmartContractAdapter';
+import { cancelEscrowFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot } from '../utils/botSmartContractAdapter';
 import { deltaWrapped } from '../utils/cljs-wrapper'
-import { getOrderById, updateOrder, getActiveOrderByParticipant, getOrdersByParticipantAndStatus } from '../db';
+import { getOrderById, updateOrder, getActiveOrderByParticipant, getActiveOrderByParticipantAndState } from '../db';
 
 const explorerBaseURL = "https://basescan.org/"
 const helperCreateHash = (): string => {
@@ -34,7 +33,7 @@ type KeyboardMessage = {
 }
 
 type OrderBookMessage = {
-    text: string[],
+    text: string,
     keyboard: KeyboardMessage
 }
 
@@ -47,7 +46,16 @@ type SendMessageData = {
 type Effects = {
     reply?: string[],
     deleteMessage?: DeleteDetails[] 
-    orderBookMessage?: OrderBookMessage,
+    orderBookMessage?: OrderBookMessage[],
+    createEscrow?: {
+        buyerAddress: string,
+        sellerAddress: string,
+        amount: string,
+    },
+    cancelEscrow?: {
+        escrowAddress: string,
+        markAsFundedFirst?: boolean,
+    },
     sendMessage?: SendMessageData[],
     answerQuery?: boolean,
 }
@@ -55,6 +63,16 @@ type Effects = {
 type EffectsResponse = {
     reply?: number[]
     orderMessageId?: number
+}
+
+type FsmEvent = {
+    event: string,
+    data?: Record<string, unknown>,
+}
+
+type FsmResult = {
+    state: any,
+    effects: Effects,
 }
 
 const runEffects = async (ctx: any, effects: Effects): Promise<EffectsResponse >=> {
@@ -70,34 +88,49 @@ const runEffects = async (ctx: any, effects: Effects): Promise<EffectsResponse >
 
     if (effects.deleteMessage) {
         for (const i in effects.deleteMessage) {
-            if (effects.deleteMessage[i].chat === "ctx") {
-                await ctx.telegram.deleteMessage()
-            }
+            const { chat, id } = effects.deleteMessage[i]
 
-            const { id:lastMessageId } = effects.deleteMessage[i] 
-            await ctx.telegram.deleteMessage(ctx.chat.id, lastMessageId)
+            try {
+                if (chat === "ctx") {
+                    await ctx.deleteMessage()
+                    continue
+                }
+
+                if (chat === "channel" && id) {
+                    await ctx.telegram.deleteMessage(channelId, id)
+                    continue
+                }
+
+                if (chat === "current" && id) {
+                    await ctx.telegram.deleteMessage(ctx.chat.id, id)
+                }
+            } catch (error) {
+                console.warn("Unable to delete message", { chat, id, error })
+            }
         }
     }
 
     if (effects.orderBookMessage) {
-        const { text, keyboard } = effects.orderBookMessage
-        const { text:inlineText, callback} = keyboard
+        for (const orderBookMessage of effects.orderBookMessage) {
+            const { text, keyboard } = orderBookMessage
+            const { text:inlineText, callback} = keyboard
 
-        const orderMessage = await ctx.telegram.sendMessage(
-            channelId,
-            text,
-            {
-                reply_markup: {
-                    inline_keyboard: [
-                        [
-                            { text: inlineText, callback_data: callback}
+            const orderMessage = await ctx.telegram.sendMessage(
+                channelId,
+                text,
+                {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [
+                                { text: inlineText, callback_data: callback}
+                            ]
                         ]
-                    ]
+                    }
                 }
-            }
-        )
+            )
 
-        res.orderMessageId = orderMessage.message_id
+            res.orderMessageId = orderMessage.message_id
+        }
     }
 
     if (effects.answerQuery) {
@@ -117,6 +150,58 @@ const runEffects = async (ctx: any, effects: Effects): Promise<EffectsResponse >
     }
 
     return res
+}
+
+const runFsm = (state: any, event: FsmEvent): FsmResult =>
+    deltaWrapped(state, event) as FsmResult
+
+const persistGeneratedMessageIds = async (
+    state: any,
+    effectResponse: EffectsResponse,
+) => {
+    const { reply, orderMessageId } = effectResponse
+
+    if (!reply?.length && !orderMessageId) {
+        return state
+    }
+
+    const eventName = orderMessageId ? "setMessagesIds" : "setLastMessageId";
+    const payload: Record<string, unknown> = {};
+
+    if (reply?.length) {
+        payload.messageId = reply[0];
+    }
+    if (orderMessageId) {
+        payload.orderMessageId = orderMessageId;
+    }
+
+    return runFsm(state, {
+        event: eventName,
+        data: payload,
+    }).state
+}
+
+const applyFsmEvent = async (
+    ctx: any,
+    state: any,
+    event: FsmEvent,
+    options?: {
+        persistGeneratedMessages?: boolean,
+    },
+) => {
+    const { state: nextState, effects } = runFsm(state, event)
+    const effectResponse = await runEffects(ctx, effects)
+    const stateToPersist = options?.persistGeneratedMessages
+        ? await persistGeneratedMessageIds(nextState, effectResponse)
+        : nextState
+
+    await updateOrder(stateToPersist)
+
+    return {
+        state: stateToPersist,
+        effects,
+        effectResponse,
+    }
 }
 
 const channelId = Number(process.env.TELEGRAM_CHANNEL)
@@ -175,26 +260,12 @@ bot.action(/^(sell|buy)$/, async ctx => {
     await ctx.answerCbQuery();
     await ctx.deleteMessage();
 
-    const baseState = s_0();
-    const { state: nextState, effects } = deltaWrapped(baseState, {
+    await applyFsmEvent(ctx, s_0(), {
         event: action,
         data: { username },
+    }, {
+        persistGeneratedMessages: true,
     });
-
-    const { reply } = await runEffects(ctx, effects);
-    let stateToPersist = nextState;
-
-    const lastMessageId = reply?.[reply.length - 1];
-
-    if (lastMessageId) {
-        const { state } = deltaWrapped(stateToPersist, {
-            event: 'setLastMessageId',
-            data: { messageId: lastMessageId },
-        });
-        stateToPersist = state;
-    }
-
-    await updateOrder(stateToPersist);
 });
 
 // NOTE:  Maybe I should use a webhook to replace this logic
@@ -207,7 +278,7 @@ bot.command('funded', async ctx => {
     }
 
     try {
-        const response = await getOrdersByParticipantAndStatus(username, "waitingFunding");
+        const response = await getActiveOrderByParticipantAndState(username, "waitingFunding");
         const activeCouch = response?.docs?.[0];
 
         if (!activeCouch) {
@@ -223,17 +294,9 @@ bot.command('funded', async ctx => {
         const txHash = await markAsFundedFromBot(activeCouch.escrowAddress);
 
         if (txHash) {
-            const { state, effects } = deltaWrapped(activeCouch, { event: "escrowFunded" });
-            await updateOrder(state);
-            await runEffects(ctx, effects);
-        } else if (activeCouch?.seller?.chatId) {
-            const amount = activeCouch.amount ?? "the agreed";
-            await ctx.telegram.sendMessage(
-                activeCouch.seller.chatId,
-                `Please confirm you deposited ${amount} XOC in the escrow address ${activeCouch.escrowAddress}`,
-            );
+            await applyFsmEvent(ctx, activeCouch, { event: "escrowFunded" });
         } else {
-            await ctx.reply("Unable to verify the escrow funding transaction. Please try again.");
+            await applyFsmEvent(ctx, activeCouch, { event: "escrowFundingFailed" });
         }
     } catch (error) {
         console.error('Error processing /funded command', error);
@@ -250,7 +313,7 @@ bot.command('release', async ctx => {
     }
 
     try {
-        const response = await getOrdersByParticipantAndStatus(username, "waitingRelease");
+        const response = await getActiveOrderByParticipantAndState(username, "waitingRelease");
         const activeCouch = response?.docs?.[0];
 
         if (!activeCouch) {
@@ -266,29 +329,12 @@ bot.command('release', async ctx => {
         const txHash = await confirmFiatReceivedFromBot(activeCouch.escrowAddress);
 
         if (txHash) {
-            const { state, effects } = deltaWrapped(activeCouch, {
+            await applyFsmEvent(ctx, activeCouch, {
                 event: "fundsReleased",
                 data: { explorerUrl: explorerBaseURL + `tx/${txHash}` },
             });
-            await updateOrder(state);
-            await runEffects(ctx, effects);
         } else {
-            const sellerChatId = activeCouch?.seller?.chatId;
-            const buyerChatId = activeCouch?.buyer?.chatId;
-
-            if (sellerChatId) {
-                await ctx.telegram.sendMessage(
-                    sellerChatId,
-                    "There was an error releasing the funds. Please try again or contact support",
-                );
-            }
-
-            if (buyerChatId) {
-                await ctx.telegram.sendMessage(
-                    buyerChatId,
-                    "There was an error releasing the funds. Wait for the seller to release again or contact support",
-                );
-            }
+            await applyFsmEvent(ctx, activeCouch, { event: "releaseFailed" });
         }
     } catch (error) {
         console.error('Error processing /release command', error);
@@ -296,155 +342,66 @@ bot.command('release', async ctx => {
     }
 });
 
-/*
-bot.command('release', async ctx => {
-    const username = ctx.from.username!
-    const activeOrder = orders.find(o =>
-        o.seller?.username === username &&
-        o.status === 'active' &&
-        o.step === 'funded'
-    )
-
-    const buyerChatId = activeOrder?.buyer?.chatId!
-    
-    await ctx.telegram.sendMessage(
-        buyerChatId, 
-        "You want to receive XOC or USDT", 
-        Markup.inlineKeyboard([
-                [ Markup.button.callback('XOC', 'XOC'), Markup.button.callback('USDT', 'USDT') ]
-            ]
-        )
-    )
-
-})
-*/
-
 bot.command('help', async ctx => {
     await ctx.reply("Please contact @cuaucortes for assistance")
 })
 
 bot.command('cancel', async ctx => {
-    await ctx.reply("Cancel flow is being migrated to the new engine. Please contact support if you need to cancel an order.");
-});
+    const username = ctx.from.username;
 
-// Expose helpers needed once cancel flow is re-enabled.
-export const legacyCancelHelpers = {
-    checkAmountFromBot,
-    refundSellerFromBot,
-};
-
-/* Legacy cancel implementation retained for reference until the CLJS flow is ready.
-bot.command('cancel', async ctx => {
-    const username = ctx.from.username!
-    const activeOrder = orders.find(o =>
-        (o.buyer?.username === username ||
-        o.seller?.username === username ) &&
-        o.status === 'active'
-    )
-    const orderId = activeOrder?.orderId
-
-    if(!activeOrder) {
-        ctx.reply("You have no active orders")
+    if (!username) {
+        await ctx.reply("Please set a username to use the bot");
+        return;
     }
 
+    try {
+        const activeResponse = await getActiveOrderByParticipant(username);
+        const activeCouch = activeResponse?.docs?.[0];
 
-    if (activeOrder && (
-        activeOrder.step === 'addressSet' ||
-        activeOrder.step === 'amountSet' ||
-        activeOrder.step === 'watingCounterpart')) {
+        if (!activeCouch) {
+            await ctx.reply("You have no active orders.");
+            return;
+        }
 
-            orders = orders.map((o): Order =>
-                o.orderId !== orderId 
-                   ? o
-                   : {
-                    ...o,
-                    step: 'canceled',
-                    status: 'done'
+        const { effects } = await applyFsmEvent(ctx, activeCouch, {
+            event: "cancel",
+            data: { username },
+        });
+
+        if (effects.cancelEscrow?.escrowAddress) {
+            const cancelResult = await cancelEscrowFromBot(
+                effects.cancelEscrow.escrowAddress,
+                effects.cancelEscrow.markAsFundedFirst,
+            );
+
+            if (cancelResult.status === 'refunded') {
+                const explorerUrl = `${explorerBaseURL}tx/${cancelResult.txHash}`;
+                const refundMessage = `Funds have been returned on tx ${explorerUrl}`;
+
+                if (activeCouch?.seller?.chatId) {
+                    await ctx.telegram.sendMessage(activeCouch.seller.chatId, refundMessage);
                 }
-            )
-            
-            await ctx.reply("Order canceled succesfully")
-            const orderMessageId = activeOrder.orderMessageId
-            if (orderMessageId) {
-                await ctx.telegram.deleteMessage(
-                    channelId,
-                    orderMessageId
-                )
-            }
-        } else 
-        
-        if (activeOrder?.seller?.username === username) {
-            switch (activeOrder.step) {
 
-                case 'taken':
-                case 'waitingFunding':
-                    orders = orders.map((o): Order =>
-                    o.orderId !== orderId 
-                        ? o
-                        : {
-                            ...o,
-                            step: 'canceled',
-                            status: 'done'
-                        }
-                    )
+                if (activeCouch?.buyer?.chatId) {
+                    await ctx.telegram.sendMessage(activeCouch.buyer.chatId, refundMessage);
+                }
+            } else if (cancelResult.status === 'failed') {
+                const supportMessage = "Order canceled, but the escrow refund failed. Please contact support.";
 
-                    await ctx.reply("Order canceled succesfully")
-                    await ctx.telegram.sendMessage(activeOrder.buyer?.chatId!, "Seller canceled the order")
-                    break
-                    
-                case 'funded':
-                    await ctx.reply("Only buyer can initiate order cancelation right now")
-                    break
-                    
-                default:
-                    await ctx.reply("Can't cancel order at current stage")
+                if (activeCouch?.seller?.chatId) {
+                    await ctx.telegram.sendMessage(activeCouch.seller.chatId, supportMessage);
+                }
 
-            }
-        } else 
-
-        if (activeOrder?.buyer?.username === username) {
-            switch (activeOrder.step) {
-
-                case 'taken':
-                case 'waitingFunding':
-                case 'funded':
-                    orders = orders.map((o): Order =>
-                    o.orderId !== orderId 
-                        ? o
-                        : {
-                            ...o,
-                            step: 'canceled',
-                            status: 'done'
-                        }
-                    )
-
-                    await ctx.reply("Order canceled succesfully")
-                    await ctx.telegram.sendMessage(activeOrder.buyer?.chatId!, "Buyer canceled the order")
-
-                    const escrowAddress = activeOrder.escrowAddress
-                    const amount = escrowAddress ? await checkAmountFromBot(escrowAddress) : null
-                    if (amount && amount > 0) {
-                        await markAsFundedFromBot(escrowAddress!)
-                        // It would be better to wait for receipt once tx is confirmed
-                        await new Promise(resolve => setTimeout(resolve, 5000));
-                        const txHashRefund = await refundSellerFromBot(escrowAddress!)
-                        const explorerUrl = explorerBaseURL + `/tx/${txHashRefund}`
-                        const nextMessage = txHashRefund ? `Funds have been returned on tx ${explorerUrl}` : `Something went wrong, please contact support`
-                        ctx.telegram.sendMessage(activeOrder.seller?.chatId!, nextMessage)
-                        ctx.telegram.sendMessage(activeOrder.buyer.chatId!, "Order canceled")
-                    }
-                    
-                    break
-                    
-                    
-                default:
-                    await ctx.reply("Can't cancel order at current stage")
-                    
+                if (activeCouch?.buyer?.chatId) {
+                    await ctx.telegram.sendMessage(activeCouch.buyer.chatId, supportMessage);
+                }
             }
         }
+    } catch (error) {
+        console.error('Error processing /cancel command', error);
+        await ctx.reply("Something went wrong while canceling the order. Please try again later.");
     }
 });
-*/
 
 bot.on('text', async ctx => {
     const username = ctx.from.username;
@@ -470,141 +427,55 @@ bot.on('text', async ctx => {
     };
 
     const eventObject = (() => {
-        switch (activeCouch.state) {
-            case 'waitingNewOrderAmount':
-                return { event: "setAmount", data: { text } };
-            case 'waitingSetAddress':
-                return { event: "setAddress", data: { text, user: baseUser } };
-            case 'watingCounterpartAddress':
-                if (!isAddress(text)) {
-                    return null;
-                }
-                return {
-                    event: "setCounterpartAddress",
-                    data: { counterpart: baseUser },
-                };
-            case 'watingCounterpartSetAmount':
-                return { event: "setAmountCounterpart", data: { text } };
-            default:
-                return null;
+        if ([
+            'waitingNewOrderAmount',
+            'waitingSetAddress',
+            'watingCounterpartAddress',
+            'watingCounterpartSetAmount',
+        ].includes(activeCouch.state)) {
+            return {
+                event: "textInput",
+                data: {
+                    text,
+                    user: baseUser,
+                    counterpart: baseUser,
+                },
+            };
         }
+
+        return null;
     })();
 
     if (!eventObject) {
-        if (activeCouch.state === 'watingCounterpartAddress') {
-            await ctx.reply("Invalid address, please try again");
-        }
         return;
     }
 
-    const { state: newState, effects } = deltaWrapped(activeCouch, eventObject);
-    const { reply, orderMessageId } = await runEffects(ctx, effects);
-
-    let stateToPersist = newState;
-
-    if (reply?.length || orderMessageId) {
-        const eventName = orderMessageId ? "setMessagesIds" : "setLastMessageId";
-        const payload: Record<string, unknown> = {};
-
-        if (reply?.length) {
-            payload.messageId = reply[0];
-        }
-        if (orderMessageId) {
-            payload.orderMessageId = orderMessageId;
-        }
-
-        const { state } = deltaWrapped(stateToPersist, {
-            event: eventName,
-            data: payload,
-        });
-        stateToPersist = state;
-    }
-
-    await updateOrder(stateToPersist);
+    const { state: stateToPersist, effects } = await applyFsmEvent(ctx, activeCouch, eventObject, {
+        persistGeneratedMessages: true,
+    });
 
     if (stateToPersist.state === "waitingFunding" && effects.createEscrow) {
         const { buyerAddress, sellerAddress, amount } = effects.createEscrow;
         const escrowAddress = await createEscrowFromBot(sellerAddress, buyerAddress, amount);
 
         if (!escrowAddress) {
-            console.error("Failed to create escrow for order:", stateToPersist.orderId);
-            await ctx.reply("Sorry, we couldn't create the escrow contract. Please contact support.");
+            await applyFsmEvent(ctx, stateToPersist, {
+                event: "escrowCreationFailed",
+            });
             return;
         }
 
         const escrowURL = explorerBaseURL + `/address/${escrowAddress}`;
 
-        const { state: escrowState, effects: escrowEffects } = deltaWrapped(stateToPersist, {
-            event: "setEscrowAddress",
+        await applyFsmEvent(ctx, stateToPersist, {
+            event: "escrowCreated",
             data: {
                 escrow: escrowAddress,
                 escrowUrl: escrowURL,
             },
         });
-
-        await updateOrder(escrowState);
-        await runEffects(ctx, escrowEffects);
     }
 });
-
-
-/*
-bot.action(/^(XOC|USDT)/, async ctx => {
-    const token = ctx.match[0]
-    const username = ctx.from.username!
-    const activeOrder = orders.find(o =>
-        o.buyer?.username === username &&
-        o.status === 'active' &&
-        o.step === 'funded'
-    )
-
-    const orderId = activeOrder?.orderId
-    const escrow = activeOrder?.escrowAddress!
-    const buyerChatId = activeOrder?.buyer?.chatId!
-    const sellerChatId = activeOrder?.seller?.chatId!
-
-    await ctx.answerCbQuery();
-
-    await ctx.deleteMessage();
-
-    const txHash = token === "XOC" ? await confirmFiatReceivedFromBot(escrow) : await swapAndSendFromBot(escrow)
-    const explorerUrl = explorerBaseURL + `/tx/${txHash}`
-
-    if (txHash) {
-        await ctx.telegram.sendMessage(
-            sellerChatId,
-            "Transaction finished succesfully. Thanks for using our bot!"
-        )
-        await ctx.telegram.sendMessage(
-            buyerChatId,
-            `txHash: ${explorerUrl}`
-        )
-        await ctx.telegram.sendMessage(
-            buyerChatId,
-            "Transaction finished succesfully. Thanks for using our bot!"
-        )
-
-        orders = orders.map((o): Order =>
-                o.orderId !== orderId 
-                    ? o
-                    : {
-                        ...o,
-                        step: 'done',
-                        status: 'done'
-                        }
-            )
-    } else {
-        await ctx.telegram.sendMessage(
-            sellerChatId,
-            "There was an error releasing the funds. Please try again or contact support"
-        )
-        await ctx.telegram.sendMessage(
-            buyerChatId,
-            "There was an error releasing the funds. Wait for the seller to release again or contact support"
-        )
-    }
-}) 
-*/
 
 bot.action(/^take:(.+)$/, async ctx => {
     const id = ctx.match[1];
@@ -631,9 +502,7 @@ bot.action(/^take:(.+)$/, async ctx => {
             }
         }
 
-        const { state, effects } = deltaWrapped(orderCouch, event);
-        await runEffects(ctx, effects);
-        await updateOrder(state);
+        await applyFsmEvent(ctx, orderCouch, event);
     } catch (error) {
         console.error(`Error while taking order ${id}`, error);
         await ctx.reply("Something went wrong while taking the order. Please try again later.");

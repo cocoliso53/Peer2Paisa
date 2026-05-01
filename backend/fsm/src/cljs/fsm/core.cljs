@@ -20,6 +20,16 @@
   (when (string? s)
     (boolean (re-matches #"\d+(-\d+)?" s))))
 
+(defn digits-only?
+  [s]
+  (when (string? s)
+    (boolean (re-matches #"\d+" s))))
+
+(defn address-like?
+  [s]
+  (when (string? s)
+    (boolean (re-matches #"0x[a-fA-F0-9]+" s))))
+
 (defn set-original-buyer-or-seller
   [state {{:keys [username messageId]} :data event :event}]
   (if username
@@ -81,6 +91,18 @@
   ;; and if it is an amount within the defined amount range
   (assoc state :amount text))
 
+(defn set-counterpart-amount-from-text
+  [state {{:keys [text]} :data :as event}]
+  (if (digits-only? text)
+    (set-counterpart-amount state event)
+    (assoc state :error "Invalid amount")))
+
+(defn set-owner-user-data-from-text
+  [state {{:keys [text]} :data :as event}]
+  (if (address-like? text)
+    (set-owner-user-data state event)
+    (assoc state :error "Invalid address")))
+
 (defn set-counterpart-address
   [{:keys [buyer seller sell] :as state} {{:keys [counterpart]} :data}]
   ;; would need to check if address is valid
@@ -91,6 +113,12 @@
       (assoc state (if sell :buyer :seller) counterpart)
       (assoc state :error "counterpart does not match previous data"))))
 
+(defn set-counterpart-address-from-text
+  [state {{:keys [text]} :data :as event}]
+  (if (address-like? text)
+    (set-counterpart-address state event)
+    (assoc state :error "Invalid address")))
+
 (defn set-escrow-address
   [state {{escrow :escrow} :data}]
   (assoc state :escrowAddress escrow))
@@ -100,12 +128,6 @@
   (assoc state
          :status "done"))
 
-(defn order-created-seller-cancel
-  "Once the order has been listed on the orderbook
-   TODO seller check must be done on the outside bit?"
-  [_ ]
-  )
-           
 (defn cancel-order
   [state _]
   (assoc state
@@ -127,7 +149,23 @@
   [{orderMessageId :orderMessageId} _]
   (merge {:reply ["Order canceled succesfully"]}
          (when orderMessageId
-           {:deleteMessage [{:chat "channel" :id lastMessageId}]})))
+           {:deleteMessage [{:chat "channel" :id orderMessageId}]})))
+
+(defn effect-counterpart-cancel
+  [{:keys [buyer seller escrowAddress state]} {{:keys [username]} :data}]
+  (let [seller-username (:username seller)
+        buyer-username  (:username buyer)
+        seller-cancel?  (= username seller-username)
+        cancel-label    (if seller-cancel? "Seller" "Buyer")
+        counterpart     (if seller-cancel? buyer seller)
+        base-effects    {:reply ["Order canceled succesfully"]}
+        notify-effects  (when (:chatId counterpart)
+                          {:sendMessage [{:chatId (:chatId counterpart)
+                                          :text   (str cancel-label " canceled the order")}]} )
+        escrow-effects  (when escrowAddress
+                          {:cancelEscrow {:escrowAddress      escrowAddress
+                                          :markAsFundedFirst (= state "waitingFunding")}})]
+    (merge base-effects notify-effects escrow-effects)))
 
 (defn effect-set-amount
   [{lastMessageId :lastMessageId sell :sell} _]
@@ -138,6 +176,12 @@
                        "Enter address to receive funds")]}
     {:error "No lastMessageId"}))
 
+(defn effect-text-set-amount
+  [state {{:keys [text]} :data :as event}]
+  (if (number-or-range? text)
+    (effect-set-amount state event)
+    {:reply ["Invalid range or number"]}))
+
 (defn effect-set-address
   [{:keys [sell amount orderId lastMessageId]} {{user :user text :text} :data}]
   ;; we need to add a check for a valid address
@@ -146,6 +190,12 @@
    :orderBookMessage [{:text     (str (if sell "Selling " "Buying ") amount)
                        :keyboard {:text     "Take Order"
                                   :callback (str "take:" orderId)}}]})
+
+(defn effect-text-set-address
+  [state {{:keys [text]} :data :as event}]
+  (if (address-like? text)
+    (effect-set-address state event)
+    {:reply ["Invalid address, please try again"]}))
 
 (defn effect-take-order
   [{:keys [sell range amount buyer seller orderId]} {{:keys [takerChatId]} :data}]
@@ -169,6 +219,12 @@
              "Please enter the wallet where you want to the funds"
              "Enter address for refund (if necessary)")]})
 
+(defn effect-text-set-counterpart-amount
+  [state {{:keys [text]} :data :as event}]
+  (if (digits-only? text)
+    (effect-set-counterpart-amount state event)
+    {:reply ["Invalid amount, please try again"]}))
+
 (defn set-counterpart-address-effect
   [{:keys [buyer seller sell amount]} {{:keys [counterpart]} :data}]
   (let [[buyer-address
@@ -178,6 +234,12 @@
     {:createEscrow {:buyerAddress  buyer-address
                     :sellerAddress seller-address
                     :amount        amount}}))
+
+(defn effect-text-set-counterpart-address
+  [state {{:keys [text]} :data :as event}]
+  (if (address-like? text)
+    (set-counterpart-address-effect state event)
+    {:reply ["Invalid address, please try again"]}))
 
 (defn set-escrow-address-effect
   [{:keys [buyer seller amount]} {{:keys [escrow escrowUrl]} :data}]
@@ -196,7 +258,11 @@
                                     amount
                                     " and then type /funded to continue")}
                    {:chatId (:chatId seller)
-                    :text   escrow}]}))
+                   :text   escrow}]}))
+
+(defn escrow-creation-failed-effect
+  [_ _]
+  {:reply ["Sorry, we couldn't create the escrow contract. Please contact support."]})
 
 (defn escrow-funded-effect
   [{:keys [buyer seller]} _]
@@ -208,6 +274,26 @@
                   :text (str "Seller has funded the escrow account. Contact @"
                              (:username seller) " to agree on fiat transfer"
                              " details")}]})
+
+(defn escrow-funding-failed-effect
+  [{:keys [seller amount escrowAddress]} _]
+  (if (:chatId seller)
+    {:sendMessage [{:chatId (:chatId seller)
+                    :text   (str "Please confirm you deposited "
+                                 (or amount "the agreed")
+                                 " XOC in the escrow address "
+                                 escrowAddress)}]}
+    {:reply ["Unable to verify the escrow funding transaction. Please try again."]}))
+
+(defn release-failed-effect
+  [{buyer :buyer seller :seller} _]
+  {:sendMessage (vec (concat
+                      (when (:chatId seller)
+                        [{:chatId (:chatId seller)
+                          :text   "There was an error releasing the funds. Please try again or contact support"}])
+                      (when (:chatId buyer)
+                        [{:chatId (:chatId buyer)
+                          :text   "There was an error releasing the funds. Wait for the seller to release again or contact support"}])))} )
 
 (defn complete-order-effect
   [{buyer :buyer seller :seller} {{explorerUrl :explorerUrl} :data}]
@@ -245,6 +331,10 @@
                          :effects    effect-set-amount
                          :to         "waitingSetAddress"}
    ["waitingNewOrderAmount"
+    "textInput"]        {:transition set-amount-or-range
+                         :effects    effect-text-set-amount
+                         :to         "waitingSetAddress"}
+   ["waitingNewOrderAmount"
     "setLastMessageId"] {:transition set-last-message-id
                          :effects    no-effect
                          :to         "waitingNewOrderAmount"}
@@ -256,6 +346,10 @@
    ["waitingSetAddress"
     "setAddress"]       {:transition set-owner-user-data
                          :effects    effect-set-address
+                         :to         "watingCounterpart"}
+   ["waitingSetAddress"
+    "textInput"]        {:transition set-owner-user-data-from-text
+                         :effects    effect-text-set-address
                          :to         "watingCounterpart"}
    ["waitingSetAddress"
     "setLastMessageId"] {:transition set-last-message-id
@@ -275,6 +369,10 @@
                        :effects    no-effect
                        :to         "watingCounterpart"}
    ["watingCounterpart"
+    "cancel"]         {:transition cancel-order
+                       :effects    effect-simple-cancel
+                       :to         "canceled"}
+   ["watingCounterpart"
     "takeOrder"]      {:transition set-counterpat-username-chatId
                        :effects    effect-take-order
                        :to         "watingCounterpartAddress"}
@@ -289,20 +387,60 @@
     "setAmountCounterpart"] {:transition set-counterpart-amount
                              :effects    effect-set-counterpart-amount
                              :to         "watingCounterpartAddress"}
+   ["watingCounterpartSetAmount"
+    "textInput"]            {:transition set-counterpart-amount-from-text
+                             :effects    effect-text-set-counterpart-amount
+                             :to         "watingCounterpartAddress"}
+   ["watingCounterpartSetAmount"
+    "cancel"]              {:transition cancel-order
+                            :effects    effect-counterpart-cancel
+                            :to         "canceled"}
    
    ["watingCounterpartAddress"
     "setCounterpartAddress"] {:transition set-counterpart-address
                               :effects    set-counterpart-address-effect
                               :to         "waitingFunding"}
+   ["watingCounterpartAddress"
+    "textInput"]             {:transition set-counterpart-address-from-text
+                              :effects    effect-text-set-counterpart-address
+                              :to         "waitingFunding"}
+   ["watingCounterpartAddress"
+    "cancel"]                {:transition cancel-order
+                              :effects    effect-counterpart-cancel
+                              :to         "canceled"}
    
    ["waitingFunding"
     "setEscrowAddress"] {:transition set-escrow-address
                          :effects    set-escrow-address-effect
                          :to         "waitingFunding"}
+   ["waitingFunding"
+    "escrowCreated"]    {:transition set-escrow-address
+                         :effects    set-escrow-address-effect
+                         :to         "waitingFunding"}
+   ["waitingFunding"
+    "escrowCreationFailed"] {:transition identity
+                             :effects    escrow-creation-failed-effect
+                             :to         "waitingFunding"}
+   ["waitingFunding"
+    "cancel"]           {:transition cancel-order
+                         :effects    effect-counterpart-cancel
+                         :to         "canceled"}
 
    ["waitingFunding"
     "escrowFunded"]  {:transition identity
                       :effects    escrow-funded-effect
+                      :to         "waitingRelease"}
+   ["waitingFunding"
+    "escrowFundingFailed"] {:transition identity
+                            :effects    escrow-funding-failed-effect
+                            :to         "waitingFunding"}
+   ["waitingRelease"
+    "cancel"]        {:transition cancel-order
+                      :effects    effect-counterpart-cancel
+                      :to         "canceled"}
+   ["waitingRelease"
+    "releaseFailed"] {:transition identity
+                      :effects    release-failed-effect
                       :to         "waitingRelease"}
    ["waitingRelease"
     "fundsReleased"] {:transition complete-order

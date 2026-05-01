@@ -1,6 +1,11 @@
 import { parseUnits } from "viem";
 import { createEscrow, markAsFunded, confirmFiatReceived, refundSeller, checkAmount, swapEscrow } from "../escrow/main";
 
+type CancelEscrowResult =
+    | { status: 'not_needed' }
+    | { status: 'refunded', txHash: string }
+    | { status: 'failed' }
+
 export const createEscrowFromBot = async (sellerAddres: string, buyerAddress: string, amountXOC: string) => {
     const parsedAmount = parseUnits(amountXOC, 18) // NOTE: We are hardcoding 6 here, would be better to cerate a const file or something
     const escrowAddress = await createEscrow(sellerAddres, buyerAddress, parsedAmount)
@@ -43,6 +48,36 @@ export const checkAmountFromBot = async (escrowAddress: string) => {
         return amount
     } catch (error) {
         return null
+    }
+}
+
+export const cancelEscrowFromBot = async (
+    escrowAddress: string,
+    markAsFundedFirst = false,
+): Promise<CancelEscrowResult> => {
+    try {
+        const amount = await checkAmount(escrowAddress)
+
+        if (!amount || amount <= 0n) {
+            return { status: 'not_needed' }
+        }
+
+        if (markAsFundedFirst) {
+            const marked = await markAsFunded(escrowAddress)
+            if (!marked) {
+                return { status: 'failed' }
+            }
+        }
+
+        const txHash = await refundSeller(escrowAddress)
+        if (!txHash) {
+            return { status: 'failed' }
+        }
+
+        return { status: 'refunded', txHash }
+    } catch (error) {
+        console.log("Error cancelEscrowFromBot", error)
+        return { status: 'failed' }
     }
 }
 

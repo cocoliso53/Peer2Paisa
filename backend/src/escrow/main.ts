@@ -86,6 +86,7 @@ export const refundSeller = async (escrowAddress: string) => {
     })
 
     console.log("txHash", txHash)
+    return txHash
 }
 
 export const createEscrow = async (seller: string, buyer: string, amount: bigint) => {
@@ -173,4 +174,3 @@ export const swapEscrow = async (
     //await swapEscrow("0x2fbd4931232C3456c68269c6516800884A08180d", "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9")
     //await confirmFiatReceived("0x09579E61a95792Be2440fe2Da011eC47FBfc9861")
 })()
-
