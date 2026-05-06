@@ -8,6 +8,14 @@ import { createHash, randomUUID } from 'crypto';
 import { cancelEscrowFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot } from '../utils/botSmartContractAdapter';
 import { deltaWrapped } from '../utils/cljs-wrapper'
 import { getOrderById, updateOrder, getActiveOrderByParticipant, getActiveOrderByParticipantAndState } from '../db';
+import type {
+    FsmEffects,
+    FsmEvent,
+    FsmResult,
+    OrderDocument,
+    OrderState,
+    Participant,
+} from '../types/fsm'
 
 const explorerBaseURL = "https://basescan.org/"
 const helperCreateHash = (): string => {
@@ -15,67 +23,52 @@ const helperCreateHash = (): string => {
     return createHash('md5').update(uuid, 'utf8').digest('base64url')
 }
 
-const s_0 = () => ({
+const s_0 = (): OrderDocument => ({
     state: 's0',
     status: 'active',
     orderId: helperCreateHash(),
-
 })
-
-type DeleteDetails = {
-    chat: string,
-    id?: number
-}
-
-type KeyboardMessage = {
-    text: string,
-    callback: string
-}
-
-type OrderBookMessage = {
-    text: string,
-    keyboard: KeyboardMessage
-}
-
-type SendMessageData = {
-    chatId: number,
-    text: string,
-    parseMode?: string
-}
-
-type Effects = {
-    reply?: string[],
-    deleteMessage?: DeleteDetails[] 
-    orderBookMessage?: OrderBookMessage[],
-    createEscrow?: {
-        buyerAddress: string,
-        sellerAddress: string,
-        amount: string,
-    },
-    cancelEscrow?: {
-        escrowAddress: string,
-        markAsFundedFirst?: boolean,
-    },
-    sendMessage?: SendMessageData[],
-    answerQuery?: boolean,
-}
 
 type EffectsResponse = {
     reply?: number[]
     orderMessageId?: number
 }
 
-type FsmEvent = {
-    event: string,
-    data?: Record<string, unknown>,
+type TelegramMessage = {
+    message_id: number
 }
 
-type FsmResult = {
-    state: any,
-    effects: Effects,
+type SendMessageExtra = {
+    parse_mode?: 'Markdown'
+    reply_markup?: {
+        inline_keyboard: Array<Array<{ text: string, callback_data: string }>>
+    }
 }
 
-const runEffects = async (ctx: any, effects: Effects): Promise<EffectsResponse >=> {
+type TelegramClient = {
+    deleteMessage: (chatId: string | number, messageId: number) => Promise<unknown>
+    sendMessage: (
+        chatId: string | number,
+        text: string,
+        extra?: SendMessageExtra,
+    ) => Promise<TelegramMessage>
+}
+
+type BotRuntimeContext = {
+    from: {
+        id: number
+        username?: string
+    }
+    chat?: {
+        id: string | number
+    }
+    telegram: TelegramClient
+    reply: (text: string) => Promise<TelegramMessage>
+    deleteMessage: () => Promise<unknown>
+    answerCbQuery: () => Promise<unknown>
+}
+
+const runEffects = async (ctx: BotRuntimeContext, effects: FsmEffects): Promise<EffectsResponse >=> {
     const res: EffectsResponse = {}
 
     if (effects.reply) {
@@ -101,7 +94,7 @@ const runEffects = async (ctx: any, effects: Effects): Promise<EffectsResponse >
                     continue
                 }
 
-                if (chat === "current" && id) {
+                if (chat === "current" && id && ctx.chat?.id !== undefined) {
                     await ctx.telegram.deleteMessage(ctx.chat.id, id)
                 }
             } catch (error) {
@@ -152,38 +145,40 @@ const runEffects = async (ctx: any, effects: Effects): Promise<EffectsResponse >
     return res
 }
 
-const runFsm = (state: any, event: FsmEvent): FsmResult =>
-    deltaWrapped(state, event) as FsmResult
+const runFsm = (state: OrderDocument, event: FsmEvent): FsmResult =>
+    deltaWrapped(state, event)
 
 const persistGeneratedMessageIds = async (
-    state: any,
+    state: OrderDocument,
     effectResponse: EffectsResponse,
-) => {
+): Promise<OrderDocument> => {
     const { reply, orderMessageId } = effectResponse
 
     if (!reply?.length && !orderMessageId) {
         return state
     }
 
-    const eventName = orderMessageId ? "setMessagesIds" : "setLastMessageId";
-    const payload: Record<string, unknown> = {};
+    const persistEvent: Extract<FsmEvent, { event: 'setLastMessageId' | 'setMessagesIds' }> = orderMessageId
+        ? {
+            event: "setMessagesIds",
+            data: {
+                messageId: reply?.[0],
+                orderMessageId,
+            },
+        }
+        : {
+            event: "setLastMessageId",
+            data: {
+                messageId: reply![0],
+            },
+        }
 
-    if (reply?.length) {
-        payload.messageId = reply[0];
-    }
-    if (orderMessageId) {
-        payload.orderMessageId = orderMessageId;
-    }
-
-    return runFsm(state, {
-        event: eventName,
-        data: payload,
-    }).state
+    return runFsm(state, persistEvent).state
 }
 
 const applyFsmEvent = async (
-    ctx: any,
-    state: any,
+    ctx: BotRuntimeContext,
+    state: OrderDocument,
     event: FsmEvent,
     options?: {
         persistGeneratedMessages?: boolean,
@@ -248,7 +243,7 @@ bot.command('create', async ctx => {
 });
 
 bot.action(/^(sell|buy)$/, async ctx => {
-    const action = ctx.match[1];
+    const action = ctx.match[1] as 'sell' | 'buy';
     const username = ctx.from.username;
 
     if (!username) {
@@ -420,19 +415,21 @@ bot.on('text', async ctx => {
     }
 
     const text = ctx.message.text;
-    const baseUser = {
+    const baseUser: Participant = {
         username,
         address: text,
         chatId: ctx.from.id,
     };
 
-    const eventObject = (() => {
-        if ([
+    const eventObject: Extract<FsmEvent, { event: 'textInput' }> | null = (() => {
+        const supportedStates: OrderState[] = [
             'waitingNewOrderAmount',
             'waitingSetAddress',
             'watingCounterpartAddress',
             'watingCounterpartSetAmount',
-        ].includes(activeCouch.state)) {
+        ]
+
+        if (supportedStates.includes(activeCouch.state)) {
             return {
                 event: "textInput",
                 data: {
@@ -487,14 +484,14 @@ bot.action(/^take:(.+)$/, async ctx => {
         return;
     }
 
-    const counterpart = {
+    const counterpart: Participant = {
         username: ctx.from.username!,
         chatId: ctx.from.id,
     };
 
     try {
         const amountRange = orderCouch.range
-        const event = {
+        const event: Extract<FsmEvent, { event: 'takeOrder' | 'takeOrderRange' }> = {
             event: amountRange ? "takeOrderRange" : "takeOrder",
             data: { 
                 counterpart,

@@ -1,6 +1,7 @@
 import axios from 'axios'
 import dotenv from 'dotenv'
 import path from 'path'
+import type { CouchFindResponse, CouchWriteResponse, OrderDocument, OrderState } from './types/fsm'
 dotenv.config({
   path: path.resolve(__dirname, '../.env'),
 })
@@ -39,36 +40,36 @@ const handleCouchError = (err: unknown, context: string): never => {
 
 // Assumes orders "table" exists
 // check nulls, don't like that but works for now
-export const getOrderById = async (orderId: string) => {
+export const getOrderById = async (orderId: string): Promise<OrderDocument> => {
     try {
-        const { data } = await couch.get(`/orders/${orderId}`)
+        const { data } = await couch.get<OrderDocument>(`/orders/${orderId}`)
         if (data?.error) {
             throw new Error(`Order ${orderId} not found: ${data.error}`)
         }
         return data
     } catch (err) {
-        handleCouchError(err, `getOrderById(${orderId})`)
+        return handleCouchError(err, `getOrderById(${orderId})`)
     }
 }
 
-// need to refine the types here
-// Using this for both update and creating a new order
-export const updateOrder = async (basicOrder: any) => {
+export const updateOrder = async (basicOrder: OrderDocument): Promise<CouchWriteResponse> => {
     try {
         const { orderId } = basicOrder
-        const { data } = await couch.put(
+        const { data } = await couch.put<CouchWriteResponse>(
             `/orders/${orderId}`,
             basicOrder
         )
         return data
     } catch (err) {
-        handleCouchError(err, `updateOrder(${basicOrder?.orderId ?? 'unknown'})`)
+        return handleCouchError(err, `updateOrder(${basicOrder?.orderId ?? 'unknown'})`)
     }
 }
 
-export const getActiveOrderByParticipant = async (username: string) => {
+export const getActiveOrderByParticipant = async (
+    username: string,
+): Promise<CouchFindResponse<OrderDocument>> => {
     try {
-        const { data } = await couch.post("/orders/_find", {
+        const { data } = await couch.post<CouchFindResponse<OrderDocument>>("/orders/_find", {
             selector: { 
                 status: 'active',
                 participants: { $all: [username]}
@@ -77,13 +78,16 @@ export const getActiveOrderByParticipant = async (username: string) => {
 
         return data
     } catch (err) {
-        handleCouchError(err, `getActiveOrderByParticipant(${username})`)
+        return handleCouchError(err, `getActiveOrderByParticipant(${username})`)
     }
 }
 
-export const getActiveOrderByParticipantAndState = async (username: string, state: string) => {
+export const getActiveOrderByParticipantAndState = async (
+    username: string,
+    state: OrderState,
+): Promise<CouchFindResponse<OrderDocument>> => {
     try {
-        const { data } = await couch.post('/orders/_find', {
+        const { data } = await couch.post<CouchFindResponse<OrderDocument>>('/orders/_find', {
             selector: {
                 status: 'active',
                 state,
@@ -93,13 +97,16 @@ export const getActiveOrderByParticipantAndState = async (username: string, stat
 
         return data
     } catch (err) {
-        handleCouchError(err, `getActiveOrderByParticipantAndState(${username}, ${state})`)
+        return handleCouchError(err, `getActiveOrderByParticipantAndState(${username}, ${state})`)
     }
 }
 
-export const getOrdersByParticipantAndStatus = async (username: string, status: string) => {
+export const getOrdersByParticipantAndStatus = async (
+    username: string,
+    status: OrderDocument['status'],
+): Promise<CouchFindResponse<OrderDocument>> => {
     try {
-        const { data } = await couch.post('/orders/_find', {
+        const { data } = await couch.post<CouchFindResponse<OrderDocument>>('/orders/_find', {
             selector: {
                 status,
                 participants: { $all: [username] }
@@ -108,7 +115,7 @@ export const getOrdersByParticipantAndStatus = async (username: string, status: 
 
         return data
     } catch (err) {
-        handleCouchError(err, `getOrdersByParticipantAndStatus(${username}, ${status})`)
+        return handleCouchError(err, `getOrdersByParticipantAndStatus(${username}, ${status})`)
     }
 }
 
