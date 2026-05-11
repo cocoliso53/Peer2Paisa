@@ -3,1076 +3,550 @@
             [fsm.core :as core]))
 
 (def username "username")
-(def last-message-id 1234)
-(def base-event {:data {:username  username
-                        :messageId last-message-id}})
+(def maker-user {:username "username"
+                 :chatId   987654
+                 :address  "0x987654"})
+(def taker-summary {:username "counterpart"
+                    :chatId   56789})
+(def taker-user {:username "counterpart"
+                 :chatId   56789
+                 :address  "0x123456"})
 (def s0 {:state   "s0"
          :status  "active"
          :orderId "orderId123"})
-(def user {:username "username"
-           :chatId   987654
-           :address  "0x987654"})
-(def counterpart {:username "counterpart"
-                  :chatId   56789})
-(def buy-state (core/delta s0 (assoc base-event :event "buy")))
-(def sell-state (core/delta s0 (assoc base-event :event "sell")))
-(def canceled-state (core/delta s0 {:event "cancel"}))
+(def quote-event {:event "quoteLocked"
+                  :data  {:marketRate "18.00"
+                          :lockedRate "18.45"
+                          :lockedFiatAmount "4621.72"
+                          :lockedTokenAmount "250.500000"}})
+(def escrow-created-event {:event "escrowCreated"
+                           :data  {:escrow "0xescrow"
+                                   :escrowUrl "https://basescan.org/address/0xescrow"}})
 
 (defn transit-events
   [init-state events]
   (reduce core/delta init-state events))
 
+(defn order-state
+  [side amount premium]
+  (transit-events
+   s0
+   [{:event side
+     :data  {:username username
+             :messageId 1001}}
+    {:event "setAmount"
+     :data  {:text amount
+             :messageId 1002}}
+    {:event "setPremium"
+     :data  {:text premium
+             :messageId 1003}}
+    {:event "setAddress"
+     :data  {:user maker-user
+             :messageId 1004}}
+    {:event "setMessagesIds"
+     :data  {:messageId 1005
+             :orderMessageId 501}}]))
 
-(deftest transit-events-function
-  
-  (testing "correct behaviour helper function"
-    (is (= {:amount        "100-1000"
-            :participants  ["username"]
-            :state         "waitingSetAddress"
-            :sell          false
-            :status        "active"
-            :lastMessageId 1111
-            :buyer         {:username "username"}
-            :range         true
-            :orderId       "orderId123"}
-           (transit-events s0 [(assoc base-event :event "buy")
-                               {:event "setAmount"
-                                :data  {:text      "100-1000"
-                                        :messageId 1111}}])))))
+(defn taken-order-state
+  [side amount premium]
+  (transit-events
+   (order-state side amount premium)
+   [{:event "takeOrder"
+     :data  {:counterpart taker-summary
+             :takerChatId 56789}}]))
+
+(defn taken-range-order-state
+  [side amount premium selected-amount]
+  (transit-events
+   (order-state side amount premium)
+   [{:event "takeOrderRange"
+     :data  {:counterpart taker-summary
+             :takerChatId 56789}}
+    {:event "setAmountCounterpart"
+     :data  {:text selected-amount}}]))
+
+(defn waiting-funding-state
+  [side amount premium]
+  (transit-events
+   (taken-order-state side amount premium)
+   [{:event "setCounterpartAddress"
+     :data  {:counterpart taker-user}}]))
+
+(defn quoted-state
+  [side amount premium]
+  (core/delta (waiting-funding-state side amount premium) quote-event))
+
+(defn waiting-release-state
+  [side amount premium]
+  (core/delta
+   (transit-events
+    (quoted-state side amount premium)
+    [escrow-created-event])
+   {:event "escrowFunded"}))
 
 (deftest s0-transitions
-  (testing "buy transition"
-    (let [event (assoc base-event :event "buy")]
-      (is (= {:state         "waitingNewOrderAmount"
+  (testing "buy and sell initialize the correct maker side"
+    (let [sell-event {:event "sell"
+                      :data  {:username username
+                              :messageId 1234}}
+          buy-event  {:event "buy"
+                      :data  {:username username
+                              :messageId 1234}}]
+      (is (= {:state             "waitingNewOrderAmount"
+              :status            "active"
+              :orderId           "orderId123"
+              :seller            {:username "username"}
+              :participants      ["username"]
+              :sell              true
+              :asset             "USDC"
+              :makerDenomination "USDC"
+              :lastMessageId     1234}
+             (core/delta s0 sell-event)))
+      (is (= {:state             "waitingNewOrderAmount"
+              :status            "active"
+              :orderId           "orderId123"
+              :buyer             {:username "username"}
+              :participants      ["username"]
+              :sell              false
+              :asset             "USDC"
+              :makerDenomination "MXN"
+              :lastMessageId     1234}
+             (core/delta s0 buy-event)))
+      (is (= {:reply ["Enter exact USDC amount or range to sell (eg. 100 or 100-1000)"]}
+             (core/omega s0 sell-event)))
+      (is (= {:reply ["Enter exact MXN amount or range to buy with (eg. 1800 or 1800-18000)"]}
+             (core/omega s0 buy-event)))))
+  (testing "setLastMessageId and cancel are idempotent from s0"
+    (is (= {:state         "s0"
+            :status        "active"
+            :orderId       "orderId123"
+            :lastMessageId 2222}
+           (core/delta s0 {:event "setLastMessageId"
+                           :data  {:messageId 2222}})))
+    (is (= {:no-effect true}
+           (core/omega s0 {:event "setLastMessageId"
+                           :data  {:messageId 2222}})))
+    (is (= {:state   "canceled"
+            :status  "canceled"
+            :orderId "orderId123"}
+           (core/delta s0 {:event "cancel"})))
+    (is (= {:reply ["Order canceled succesfully"]}
+           (core/omega s0 {:event "cancel"}))))
+  (testing "invalid transitions surface explicit errors"
+    (is (= {:state   "s0"
+            :status  "active"
+            :orderId "orderId123"
+            :error   "Invalid transition"}
+           (core/delta s0 {:event "invalid"})))
+    (is (= {:error "Invalid transition, no effect"}
+           (core/omega s0 {:event "invalid"})))))
+
+(deftest waiting-new-order-amount-transitions
+  (let [sell-state (core/delta s0 {:event "sell"
+                                   :data  {:username username
+                                           :messageId 1001}})
+        valid-event {:event "setAmount"
+                     :data  {:text "100.5"
+                             :messageId 1002}}
+        valid-text-input {:event "textInput"
+                          :data  {:text "100-1000"}}
+        invalid-text-input {:event "textInput"
+                            :data  {:text "bad-input"}}
+        set-last-message-event {:event "setLastMessageId"
+                                :data  {:messageId 3333}}]
+    (testing "direct amount setting moves to premium"
+      (is (= {:state         "waitingPremium"
               :status        "active"
               :orderId       "orderId123"
-              :buyer         {:username "username"}
+              :seller        {:username "username"}
               :participants  ["username"]
-              :sell          false
-              :lastMessageId 1234}
-             (core/delta s0 event)))
-      (is (= {:reply ["Enter exact amount or range (eg. 100-1000) to buy"]}
-             (core/omega s0 event)))))
-  (testing "sell transition"
-    (let [event (assoc base-event :event "sell")]
+              :sell          true
+              :asset         "USDC"
+              :makerDenomination "USDC"
+              :amount        "100.5"
+              :range         false
+              :lastMessageId 1002}
+             (core/delta sell-state valid-event)))
+      (is (= {:deleteMessage [{:chat "current" :id 1001}]
+              :reply ["Enter premium percentage over market (eg. 2.5 or -1)"]}
+             (core/omega sell-state valid-event))))
+    (testing "text input amount accepts ranges and rejects invalid values"
+      (is (= "waitingPremium" (:state (core/delta sell-state valid-text-input))))
+      (is (= "Invalid range or number"
+             (:error (core/delta sell-state invalid-text-input))))
+      (is (= {:reply ["Invalid range or number"]}
+             (core/omega sell-state invalid-text-input))))
+    (testing "auxiliary transitions work while collecting amount"
       (is (= {:state         "waitingNewOrderAmount"
               :status        "active"
               :orderId       "orderId123"
               :seller        {:username "username"}
               :participants  ["username"]
               :sell          true
-              :lastMessageId 1234}
-             (core/delta s0 event)))
-      (is (= {:reply ["Enter exact amount or range (eg. 100-1000) to sell"]}
-             (core/omega s0 event)))))
-  (testing "cancel transition"
-    (let [event {:event "cancel"}]
-      (is (= {:state   "canceled"
-              :status  "canceled"
-              :orderId "orderId123"}
-             (core/delta s0 event)))
+              :asset         "USDC"
+              :makerDenomination "USDC"
+              :lastMessageId 3333}
+             (core/delta sell-state set-last-message-event)))
+      (is (= {:no-effect true}
+             (core/omega sell-state set-last-message-event)))
+      (is (= "canceled" (:state (core/delta sell-state {:event "cancel"}))))
       (is (= {:reply ["Order canceled succesfully"]}
-             (core/omega s0 (assoc base-event :event "cancel"))))))
-  (testing "invalid transition"
-    (let [event {:event "invalid"}]
-      (is (= {:state   "s0"
-              :status  "active"
-              :orderId "orderId123"
-              :error   "Invalid transition"}
-             (core/delta s0 event)))
-      (is (= {:error "Invalid transition, no effect"}
-             (core/omega s0 (assoc base-event :event "invalid")))))))
+             (core/omega sell-state {:event "cancel"}))))))
 
-(deftest waiting-new-order-amount-transitions
-  (let [buy-state (transit-events s0 [(assoc base-event :event "buy")
-                                      {:event "setLastMessageId"
-                                       :data  {:messageId 1111}}])
-        sell-state (transit-events s0 [(assoc base-event :event "sell")
-                                       {:event "setLastMessageId"
-                                        :data  {:messageId 1111}}])
-        range-event {:event "setAmount"
-                     :data  {:text      "100-1000"
-                             :messageId 1111}}
-        single-event {:event "setAmount"
-                      :data  {:text      "100"
-                              :messageId 1111}}
-        invalid-event {:event "setAmount"
-                       :data  {:text      "not-valid"
-                               :messageId 1111}}
-        missing-text-event {:event "setAmount"
-                            :data  {:messageId 1111}}
-        cancel-event {:event "cancel"}]
-    (testing "set amount with range for buyer"
-      (let [next-state (core/delta buy-state range-event)]
-        (is (= {:amount        "100-1000"
-                :participants  ["username"]
-                :state         "waitingSetAddress"
-                :sell          false
-                :status        "active"
-                :lastMessageId 1111
-                :buyer         {:username "username"}
-                :range         true
-                :orderId       "orderId123"}
-               next-state))
-        (is (= {:deleteMessage [{:chat "current"
-                                 :id   1111}]
-                :reply         ["Enter address to receive funds"]}
-               (core/omega buy-state range-event)))))
-    (testing "set amount with range for seller"
-      (let [next-state (core/delta sell-state range-event)]
-        (is (= {:amount        "100-1000"
-                :participants  ["username"]
-                :state         "waitingSetAddress"
-                :sell          true
-                :status        "active"
-                :lastMessageId 1111
-                :seller        {:username "username"}
-                :range         true
-                :orderId       "orderId123"}
-               next-state))
-        (is (= {:deleteMessage [{:chat "current"
-                                 :id   1111}]
-                :reply         ["Enter address for refund (if necessary)"]}
-               (core/omega sell-state range-event)))))
-    (testing "set amount with single value"
-      (let [next-state (core/delta buy-state single-event)]
-        (is (= {:amount        "100"
-                :participants  ["username"]
-                :state         "waitingSetAddress"
-                :sell          false
-                :status        "active"
-                :lastMessageId 1111
-                :buyer         {:username "username"}
-                :range         false
-                :orderId       "orderId123"}
-               next-state))
-        (is (= {:deleteMessage [{:chat "current"
-                                 :id   1111}]
-                :reply         ["Enter address to receive funds"]}
-               (core/omega buy-state single-event)))))
-    (testing "invalid amount input"
-      (let [next-state (core/delta buy-state invalid-event)]
-        (is (= {:state         "waitingNewOrderAmount"
-                :status        "active"
-                :orderId       "orderId123"
-                :buyer         {:username "username"}
-                :participants  ["username"]
-                :sell          false
-                :lastMessageId 1111
-                :error         "Invalid range or number"}
-               next-state))
-        (is (= {:deleteMessage [{:chat "current"
-                                 :id   1111}]
-                :reply         ["Enter address to receive funds"]}
-               (core/omega buy-state invalid-event)))))
-    (testing "missing amount text"
-      (let [next-state (core/delta buy-state missing-text-event)]
-        (is (= {:state         "waitingNewOrderAmount"
-                :status        "active"
-                :orderId       "orderId123"
-                :buyer         {:username "username"}
-                :participants  ["username"]
-                :sell          false
-                :lastMessageId 1111
-                :error         "Invalid range or number"}
-               next-state))
-        (is (= {:deleteMessage [{:chat "current"
-                                 :id   1111}]
-                :reply         ["Enter address to receive funds"]}
-               (core/omega buy-state missing-text-event)))))
-    (testing "recovery after invalid input"
-      (let [error-state (core/delta buy-state invalid-event)
-            next-state (core/delta error-state single-event)]
-        (is (= {:amount        "100"
-                :participants  ["username"]
-                :state         "waitingSetAddress"
-                :sell          false
-                :status        "active"
-                :lastMessageId 1111
-                :buyer         {:username "username"}
-                :range         false
-                :orderId       "orderId123"}
-               next-state))
-        (is (= {:deleteMessage [{:chat "current"
-                                 :id   1111}]
-                :reply         ["Enter address to receive funds"]}
-               (core/omega error-state single-event)))))
-    (testing "cancel transition"
-      (let [next-state (core/delta buy-state cancel-event)]
-        (is (= {:state         "canceled"
-                :status        "canceled"
-                :orderId       "orderId123"
-                :buyer         {:username "username"}
-                :participants  ["username"]
-                :sell          false
-                :lastMessageId 1111}
-               next-state))
-        (is (= {:reply ["Order canceled succesfully"]}
-               (core/omega buy-state (assoc base-event :event "cancel"))))))))
+(deftest waiting-premium-transitions
+  (let [sell-state (core/delta s0 {:event "sell"
+                                   :data  {:username username
+                                           :messageId 1001}})
+        premium-state (core/delta sell-state {:event "setAmount"
+                                              :data  {:text "100"
+                                                      :messageId 1002}})
+        direct-event {:event "setPremium"
+                      :data  {:text "-1.5"
+                              :messageId 1003}}
+        text-event {:event "textInput"
+                    :data  {:text "2.75"}}
+        invalid-event {:event "textInput"
+                       :data  {:text "premium"}}]
+    (testing "premium can be set through direct events or text input"
+      (is (= "waitingSetAddress" (:state (core/delta premium-state direct-event))))
+      (is (= "waitingSetAddress" (:state (core/delta premium-state text-event))))
+      (is (= {:deleteMessage [{:chat "current" :id 1002}]
+              :reply ["Enter address for refund (if necessary)"]}
+             (core/omega premium-state direct-event))))
+    (testing "invalid premium stays in waitingPremium"
+      (is (= "Invalid premium" (:error (core/delta premium-state invalid-event))))
+      (is (= {:reply ["Invalid premium percentage, please try again"]}
+             (core/omega premium-state invalid-event))))
+    (testing "setLastMessageId and cancel are supported"
+      (is (= "waitingPremium"
+             (:state (core/delta premium-state {:event "setLastMessageId"
+                                                :data  {:messageId 3333}}))))
+      (is (= {:no-effect true}
+             (core/omega premium-state {:event "setLastMessageId"
+                                        :data  {:messageId 3333}})))
+      (is (= "canceled" (:state (core/delta premium-state {:event "cancel"}))))
+      (is (= {:reply ["Order canceled succesfully"]}
+             (core/omega premium-state {:event "cancel"}))))))
 
 (deftest waiting-set-address-transitions
-  (let [sell-state (transit-events s0 [(assoc base-event :event "sell")
+  (let [sell-state (transit-events s0 [{:event "sell"
+                                        :data  {:username username
+                                                :messageId 1001}}
                                        {:event "setAmount"
-                                        :data  {:text      "100"
-                                                :messageId 1111}}
-                                       {:event "setLastMessageId"
-                                        :data  {:messageId 1112}}])
-        buy-state (transit-events s0 [(assoc base-event :event "buy")
+                                        :data  {:text "100"
+                                                :messageId 1002}}
+                                       {:event "setPremium"
+                                        :data  {:text "2.5"
+                                                :messageId 1003}}])
+        buy-state (transit-events s0 [{:event "buy"
+                                       :data  {:username username
+                                               :messageId 1001}}
                                       {:event "setAmount"
-                                       :data  {:text      "100"
-                                               :messageId 1111}}
-                                      {:event "setLastMessageId"
-                                       :data  {:messageId 1112}}])
-        buy-state-no-last (transit-events s0 [(assoc base-event :event "buy")
-                                              {:event "setAmount"
-                                               :data  {:text      "100"
-                                                       :messageId 1111}}])
-        set-address-event {:event "setAddress"
-                           :data  {:text      "0x1231231213"
-                                   :user      user
-                                   :messageId 1112}}
-        missing-user-event {:event "setAddress"
-                            :data  {:text      "0x1231231213"
-                                    :messageId 1112}}
-        cancel-event {:event "cancel"}]
-    (testing "seller provides address"
-      (let [next-state (core/delta sell-state set-address-event)]
-        (is (= {:amount        "100"
-                :participants  ["username"]
-                :state         "watingCounterpart"
-                :sell          true
-                :status        "active"
-                :lastMessageId 1112
-                :range         false
-                :seller        {:username "username"
-                                :chatId   987654
-                                :address  "0x987654"}
-                :orderId       "orderId123"}
-               next-state))
-        (is (= {:reply            ["Order created: orderId123"]
-                :deleteMessage    [{:chat "current"
-                                    :id   1112}]
-                :orderBookMessage [{:text     "Selling 100"
-                                    :keyboard {:text     "Take Order"
-                                               :callback "take:orderId123"}}]}
-               (core/omega sell-state set-address-event)))))
-    (testing "buyer provides address"
-      (let [next-state (core/delta buy-state set-address-event)]
-        (is (= {:amount        "100"
-                :participants  ["username"]
-                :state         "watingCounterpart"
-                :sell          false
-                :status        "active"
-                :lastMessageId 1112
-                :buyer         {:username "username"
-                                :chatId   987654
-                                :address  "0x987654"}
-                :range         false
-                :orderId       "orderId123"}
-               next-state))
-        (is (= {:reply            ["Order created: orderId123"]
-                :deleteMessage    [{:chat "current"
-                                    :id   1112}]
-                :orderBookMessage [{:text     "Buying 100"
-                                    :keyboard {:text     "Take Order"
-                                               :callback "take:orderId123"}}]}
-               (core/omega buy-state set-address-event)))))
-    (testing "missing user data"
-      (let [next-state (core/delta buy-state missing-user-event)]
-        (is (= {:amount        "100"
-                :participants  ["username"]
-                :state         "waitingSetAddress"
-                :sell          false
-                :status        "active"
-                :lastMessageId 1112
-                :error         "No full user data"
-                :buyer         {:username "username"}
-                :range         false
-                :orderId       "orderId123"}
-               next-state))
-        (is (= {:reply            ["Order created: orderId123"]
-                :deleteMessage    [{:chat "current"
-                                    :id   1112}]
-                :orderBookMessage [{:text     "Buying 100"
-                                    :keyboard {:text     "Take Order"
-                                               :callback "take:orderId123"}}]}
-               (core/omega buy-state missing-user-event)))))
-    (testing "cancel transition"
-      (let [next-state (core/delta buy-state-no-last cancel-event)]
-        (is (= {:amount        "100"
-                :participants  ["username"]
-                :state         "canceled"
-                :sell          false
-                :status        "canceled"
-                :lastMessageId 1111
-                :buyer         {:username "username"}
-                :range         false
-                :orderId       "orderId123"}
-               next-state))
-        (is (= {:reply ["Order canceled succesfully"]}
-               (core/omega buy-state-no-last (assoc base-event :event "cancel"))))))))
+                                       :data  {:text "1800"
+                                               :messageId 1002}}
+                                      {:event "setPremium"
+                                       :data  {:text "-1"
+                                               :messageId 1003}}])
+        direct-address {:event "setAddress"
+                        :data  {:user maker-user
+                                :messageId 1004}}
+        valid-text-input {:event "textInput"
+                          :data  {:text "0x987654"
+                                  :user maker-user}}
+        invalid-text-input {:event "textInput"
+                            :data  {:text "invalid-address"
+                                    :user maker-user}}]
+    (testing "sell and buy listings are rendered with the correct denominations"
+      (is (= "watingCounterpart" (:state (core/delta sell-state direct-address))))
+      (is (= {:reply ["Order created: orderId123"]
+              :deleteMessage [{:chat "current" :id 1003}]
+              :orderBookMessage [{:text "Selling 100 USDC at +2.5% premium"
+                                  :keyboard {:text "Take Order"
+                                             :callback "take:orderId123"}}]}
+             (core/omega sell-state direct-address)))
+      (is (= {:reply ["Order created: orderId123"]
+              :deleteMessage [{:chat "current" :id 1003}]
+              :orderBookMessage [{:text "Buying USDC with 1800 MXN at -1% premium"
+                                  :keyboard {:text "Take Order"
+                                             :callback "take:orderId123"}}]}
+             (core/omega buy-state direct-address))))
+    (testing "text input accepts addresses and rejects invalid ones"
+      (is (= "watingCounterpart" (:state (core/delta buy-state valid-text-input))))
+      (is (= "Invalid address" (:error (core/delta sell-state invalid-text-input))))
+      (is (= {:reply ["Invalid address, please try again"]}
+             (core/omega sell-state invalid-text-input))))
+    (testing "setLastMessageId and cancel are supported"
+      (is (= "waitingSetAddress"
+             (:state (core/delta sell-state {:event "setLastMessageId"
+                                             :data  {:messageId 4444}}))))
+      (is (= {:no-effect true}
+             (core/omega sell-state {:event "setLastMessageId"
+                                     :data  {:messageId 4444}})))
+      (is (= "canceled" (:state (core/delta sell-state {:event "cancel"}))))
+      (is (= {:reply ["Order canceled succesfully"]}
+             (core/omega sell-state {:event "cancel"}))))))
 
-(deftest wating-counterpart-transitions
-  (let [sell-state (transit-events s0 [(assoc base-event :event "sell")
-                                       {:event "setAmount"
-                                        :data  {:text      "100"
-                                                :messageId 1111}}
-                                       {:event "setAddress"
-                                        :data  {:text      "0x1231231213"
-                                                :user      user
-                                                :messageId 1112}}
-                                       {:event "setMessagesIds"
-                                        :data  {:messageId      1113
-                                                :orderMessageId 501}}])
-        buy-state (transit-events s0 [(assoc base-event :event "buy")
-                                      {:event "setAmount"
-                                       :data  {:text      "100"
-                                               :messageId 1111}}
-                                      {:event "setAddress"
-                                       :data  {:text      "0x1231231213"
-                                               :user      user
-                                               :messageId 1112}}
-                                      {:event "setMessagesIds"
-                                       :data  {:messageId      1113
-                                               :orderMessageId 501}}])
-        sell-range-state (transit-events s0 [(assoc base-event :event "sell")
-                                             {:event "setAmount"
-                                              :data  {:text      "100-1000"
-                                                      :messageId 1111}}
-                                             {:event "setAddress"
-                                              :data  {:text      "0x1231231213"
-                                                      :user      user
-                                                      :messageId 1112}}
-                                             {:event "setMessagesIds"
-                                              :data  {:messageId      1113
-                                                      :orderMessageId 501}}])
-        buy-range-state (transit-events s0 [(assoc base-event :event "buy")
-                                            {:event "setAmount"
-                                             :data  {:text      "100-1000"
-                                                     :messageId 1111}}
-                                            {:event "setAddress"
-                                             :data  {:text      "0x1231231213"
-                                                     :user      user
-                                                     :messageId 1112}}
-                                            {:event "setMessagesIds"
-                                             :data  {:messageId      1113
-                                                     :orderMessageId 501}}])
-        take-order-event {:event "takeOrder"
-                          :data  {:counterpart counterpart
-                                  :takerChatId 56789}}
-        take-order-range-event {:event "takeOrderRange"
-                                :data  {:counterpart counterpart
-                                        :takerChatId 56789}}]
-    (testing "take order for seller"
-      (let [next-state (core/delta sell-state take-order-event)]
-        (is (= {:amount         "100"
-                :participants   ["username" "counterpart"]
-                :state          "watingCounterpartAddress"
-                :orderMessageId 501
-                :sell           true
-                :status         "active"
-                :lastMessageId  1113
-                :buyer          {:username "counterpart"
-                                 :chatId   56789}
-                :range          false
-                :seller         {:username "username"
-                                 :chatId   987654
-                                 :address  "0x987654"}
-                :orderId        "orderId123"}
-               next-state))
-        (is (= {:deleteMessage [{:chat "ctx"}]
-                :answerCbQuery true
-                :sendMessage   [{:chatId 987654
-                                 :text   "Order #orderId123 has been taken. Waiting for the counterpart to enter details"}
-                                {:chatId 56789
-                                 :text   "Please enter the wallet where you want to receive the funds"}]}
-               (core/omega sell-state take-order-event)))))
-    (testing "take order for buyer"
-      (let [next-state (core/delta buy-state take-order-event)]
-        (is (= {:amount         "100"
-                :participants   ["username" "counterpart"]
-                :state          "watingCounterpartAddress"
-                :orderMessageId 501
-                :sell           false
-                :status         "active"
-                :lastMessageId  1113
-                :buyer          {:username "username"
-                                 :chatId   987654
-                                 :address  "0x987654"}
-                :range          false
-                :seller         {:username "counterpart"
-                                 :chatId   56789}
-                :orderId        "orderId123"}
-               next-state))
-        (is (= {:deleteMessage [{:chat "ctx"}]
-                :answerCbQuery true
-                :sendMessage   [{:chatId 987654
-                                 :text   "Order #orderId123 has been taken. Waiting for the counterpart to enter details"}
-                                {:chatId 56789
-                                 :text   "Enter address for refund (if necessary)"}]}
-               (core/omega buy-state take-order-event)))))
-    (testing "take order range for seller"
-      (let [next-state (core/delta sell-range-state take-order-range-event)]
-        (is (= {:amount         "100-1000"
-                :participants   ["username" "counterpart"]
-                :state          "watingCounterpartSetAmount"
-                :orderMessageId 501
-                :sell           true
-                :status         "active"
-                :lastMessageId  1113
-                :buyer          {:username "counterpart"
-                                 :chatId   56789}
-                :range          true
-                :seller         {:username "username"
-                                 :chatId   987654
-                                 :address  "0x987654"}
-                :orderId        "orderId123"}
-               next-state))
-        (is (= {:deleteMessage [{:chat "ctx"}]
-                :answerCbQuery true
-                :sendMessage   [{:chatId 987654
-                                 :text   "Order #orderId123 has been taken. Waiting for the counterpart to enter details"}
-                                {:chatId 56789
-                                 :text   "Select an amount between 100-1000"}]}
-               (core/omega sell-range-state take-order-range-event)))))
-    (testing "take order range for buyer"
-      (let [next-state (core/delta buy-range-state take-order-range-event)]
-        (is (= {:amount         "100-1000"
-                :participants   ["username" "counterpart"]
-                :state          "watingCounterpartSetAmount"
-                :orderMessageId 501
-                :sell           false
-                :status         "active"
-                :lastMessageId  1113
-                :buyer          {:username "username"
-                                 :chatId   987654
-                                 :address  "0x987654"}
-                :range          true
-                :seller         {:username "counterpart"
-                                 :chatId   56789}
-                :orderId        "orderId123"}
-               next-state))
-        (is (= {:deleteMessage [{:chat "ctx"}]
-                :answerCbQuery true
-                :sendMessage   [{:chatId 987654
-                                 :text   "Order #orderId123 has been taken. Waiting for the counterpart to enter details"}
-                                {:chatId 56789
-                                 :text   "Select an amount between 100-1000"}]}
-               (core/omega buy-range-state take-order-range-event)))))))
+(deftest waiting-counterpart-transitions
+  (let [sell-state (order-state "sell" "100" "2.5")
+        buy-state (order-state "buy" "1800" "-1")
+        sell-range-state (order-state "sell" "100-1000" "2.5")
+        buy-range-state (order-state "buy" "1800-18000" "-1")
+        set-messages-event {:event "setMessagesIds"
+                            :data  {:messageId 1111
+                                    :orderMessageId 999}}
+        take-event {:event "takeOrder"
+                    :data  {:counterpart taker-summary
+                            :takerChatId 56789}}
+        take-range-event {:event "takeOrderRange"
+                          :data  {:counterpart taker-summary
+                                  :takerChatId 56789}}]
+    (testing "setMessagesIds updates the orderbook reference"
+      (is (= {:state             "watingCounterpart"
+              :status            "active"
+              :orderId           "orderId123"
+              :seller            maker-user
+              :participants      ["username"]
+              :sell              true
+              :asset             "USDC"
+              :makerDenomination "USDC"
+              :amount            "100"
+              :premiumPct        "2.5"
+              :range             false
+              :lastMessageId     1111
+              :orderMessageId    999}
+             (core/delta sell-state set-messages-event)))
+      (is (= {:no-effect true}
+             (core/omega sell-state set-messages-event))))
+    (testing "non-range take flow prompts the taker correctly for sell and buy orders"
+      (is (= "watingCounterpartAddress" (:state (core/delta sell-state take-event))))
+      (is (= {:deleteMessage [{:chat "ctx"}]
+              :answerQuery true
+              :sendMessage [{:chatId 987654
+                             :text "Order #orderId123 has been taken. Waiting for the counterpart to enter details"}
+                            {:chatId 56789
+                             :text "Please enter the wallet where you want to receive the funds"}]}
+             (core/omega sell-state take-event)))
+      (is (= {:deleteMessage [{:chat "ctx"}]
+              :answerQuery true
+              :sendMessage [{:chatId 987654
+                             :text "Order #orderId123 has been taken. Waiting for the counterpart to enter details"}
+                            {:chatId 56789
+                             :text "Enter address for refund (if necessary)"}]}
+             (core/omega buy-state take-event))))
+    (testing "range take flow asks for an amount in the maker denomination"
+      (is (= "watingCounterpartSetAmount" (:state (core/delta sell-range-state take-range-event))))
+      (is (= {:deleteMessage [{:chat "ctx"}]
+              :answerQuery true
+              :sendMessage [{:chatId 987654
+                             :text "Order #orderId123 has been taken. Waiting for the counterpart to enter details"}
+                            {:chatId 56789
+                             :text "Select an amount between 100-1000 USDC"}]}
+             (core/omega sell-range-state take-range-event)))
+      (is (= {:deleteMessage [{:chat "ctx"}]
+              :answerQuery true
+              :sendMessage [{:chatId 987654
+                             :text "Order #orderId123 has been taken. Waiting for the counterpart to enter details"}
+                            {:chatId 56789
+                             :text "Select an amount between 1800-18000 MXN"}]}
+             (core/omega buy-range-state take-range-event))))
+    (testing "open orders can still be canceled from the orderbook state"
+      (is (= "canceled" (:state (core/delta sell-state {:event "cancel"}))))
+      (is (= {:reply ["Order canceled succesfully"]
+              :deleteMessage [{:chat "channel" :id 501}]}
+             (core/omega sell-state {:event "cancel"}))))))
 
-(deftest wating-counterpart-address-transitions
-  (let [sell-state (transit-events s0 [(assoc base-event :event "sell")
-                                       {:event "setAmount"
-                                        :data  {:text      "100"
-                                                :messageId 1111}}
-                                       {:event "setAddress"
-                                        :data  {:text      "0x1231231213"
-                                                :user      user
-                                                :messageId 1112}}
-                                       {:event "setMessagesIds"
-                                        :data  {:messageId      1113
-                                                :orderMessageId 501}}
-                                       {:event "takeOrder"
-                                        :data  {:counterpart counterpart}}])
-        buy-state (transit-events s0 [(assoc base-event :event "buy")
-                                      {:event "setAmount"
-                                       :data  {:text      "100"
-                                               :messageId 1111}}
-                                      {:event "setAddress"
-                                       :data  {:text      "0x1231231213"
-                                               :user      user
-                                               :messageId 1112}}
-                                      {:event "setMessagesIds"
-                                       :data  {:messageId      1113
-                                               :orderMessageId 501}}
-                                      {:event "takeOrder"
-                                       :data  {:counterpart counterpart}}])
-        sell-range-state (transit-events s0 [(assoc base-event :event "sell")
-                                             {:event "setAmount"
-                                              :data  {:text      "100-1000"
-                                                      :messageId 1111}}
-                                             {:event "setAddress"
-                                              :data  {:text      "0x1231231213"
-                                                      :user      user
-                                                      :messageId 1112}}
-                                             {:event "setMessagesIds"
-                                              :data  {:messageId      1113
-                                                      :orderMessageId 501}}
-                                             {:event "takeOrderRange"
-                                              :data  {:counterpart counterpart}}
-                                             {:event "setAmountCounterpart"
-                                              :data  {:text "500"}}])
-        buy-range-state (transit-events s0 [(assoc base-event :event "buy")
-                                            {:event "setAmount"
-                                             :data  {:text      "100-1000"
-                                                     :messageId 1111}}
-                                            {:event "setAddress"
-                                             :data  {:text      "0x1231231213"
-                                                     :user      user
-                                                     :messageId 1112}}
-                                            {:event "setMessagesIds"
-                                             :data  {:messageId      1113
-                                                     :orderMessageId 501}}
-                                            {:event "takeOrderRange"
-                                             :data  {:counterpart counterpart}}
-                                            {:event "setAmountCounterpart"
-                                             :data  {:text "500"}}])
-        counterpart-address-event {:event "setCounterpartAddress"
-                                   :data  {:counterpart (assoc counterpart
-                                                               :address "0x56789")}}
+(deftest waiting-counterpart-set-amount-transitions
+  (let [sell-state (core/delta (order-state "sell" "100-1000" "2.5")
+                               {:event "takeOrderRange"
+                                :data  {:counterpart taker-summary
+                                        :takerChatId 56789}})
+        buy-state (core/delta (order-state "buy" "1800-18000" "-1")
+                              {:event "takeOrderRange"
+                               :data  {:counterpart taker-summary
+                                       :takerChatId 56789}})
+        direct-event {:event "setAmountCounterpart"
+                      :data  {:text "250.5"}}
+        valid-text-input {:event "textInput"
+                          :data  {:text "5000"}}
+        invalid-text-input {:event "textInput"
+                            :data  {:text "99999"}}]
+    (testing "direct and text amount selection advance to counterpart address"
+      (is (= "watingCounterpartAddress" (:state (core/delta sell-state direct-event))))
+      (is (= {:reply ["Please enter the wallet where you want to receive the funds"]}
+             (core/omega sell-state direct-event)))
+      (is (= "watingCounterpartAddress" (:state (core/delta buy-state valid-text-input))))
+      (is (= {:reply ["Enter address for refund (if necessary)"]}
+             (core/omega buy-state valid-text-input))))
+    (testing "invalid range amount is rejected"
+      (is (= "Invalid amount" (:error (core/delta buy-state invalid-text-input))))
+      (is (= {:reply ["Invalid amount, please try again"]}
+             (core/omega buy-state invalid-text-input))))
+    (testing "cancel notifies the maker once a taker exists"
+      (is (= "canceled" (:state (core/delta sell-state {:event "cancel"
+                                                        :data  {:username "counterpart"}}))))
+      (is (= {:reply ["Order canceled succesfully"]
+              :sendMessage [{:chatId 987654
+                             :text "Buyer canceled the order"}]}
+             (core/omega sell-state {:event "cancel"
+                                     :data  {:username "counterpart"}}))))))
+
+(deftest waiting-counterpart-address-transitions
+  (let [sell-state (taken-order-state "sell" "100" "2.5")
+        buy-state (taken-order-state "buy" "1800" "-1")
+        range-state (taken-range-order-state "sell" "100-1000" "2.5" "250.5")
+        direct-event {:event "setCounterpartAddress"
+                      :data  {:counterpart taker-user}}
+        text-event {:event "textInput"
+                    :data  {:text "0x123456"
+                            :counterpart taker-user}}
+        invalid-text-event {:event "textInput"
+                            :data  {:text "invalid-address"
+                                    :counterpart taker-summary}}
         mismatch-event {:event "setCounterpartAddress"
                         :data  {:counterpart {:username "otherguy"
-                                              :chatId   9999
-                                              :address  "0x9999"}}}]
-    (testing "set counterpart address for seller"
-      (let [next-state (core/delta sell-state counterpart-address-event)]
-        (is (= {:amount         "100"
-                :participants   ["username" "counterpart"]
-                :state          "waitingFunding"
-                :orderMessageId 501
-                :sell           true
-                :status         "active"
-                :lastMessageId  1113
-                :buyer          {:username "counterpart"
-                                 :chatId   56789
-                                 :address  "0x56789"}
-                :range          false
-                :seller         {:username "username"
-                                 :chatId   987654
-                                 :address  "0x987654"}
-                :orderId        "orderId123"}
-               next-state))
-        (is (= {:createEscrow {:buyerAddress  "0x56789"
-                               :sellerAddress "0x987654"
-                               :amount        "100"}}
-               (core/omega sell-state counterpart-address-event)))))
-    (testing "set counterpart address for buyer"
-      (let [next-state (core/delta buy-state counterpart-address-event)]
-        (is (= {:amount         "100"
-                :participants   ["username" "counterpart"]
-                :state          "waitingFunding"
-                :orderMessageId 501
-                :sell           false
-                :status         "active"
-                :lastMessageId  1113
-                :buyer          {:username "username"
-                                 :chatId   987654
-                                 :address  "0x987654"}
-                :range          false
-                :seller         {:username "counterpart"
-                                 :chatId   56789
-                                 :address  "0x56789"}
-                :orderId        "orderId123"}
-               next-state))
-        (is (= {:createEscrow {:buyerAddress  "0x987654"
-                               :sellerAddress "0x56789"
-                               :amount        "100"}}
-               (core/omega buy-state counterpart-address-event)))))
-    (testing "set counterpart address after range amount for seller"
-      (let [next-state (core/delta sell-range-state counterpart-address-event)]
-        (is (= {:amount         "500"
-                :participants   ["username" "counterpart"]
-                :state          "waitingFunding"
-                :orderMessageId 501
-                :sell           true
-                :status         "active"
-                :lastMessageId  1113
-                :buyer          {:username "counterpart"
-                                 :chatId   56789
-                                 :address  "0x56789"}
-                :range          true
-                :seller         {:username "username"
-                                 :chatId   987654
-                                 :address  "0x987654"}
-                :orderId        "orderId123"}
-               next-state))
-        (is (= {:createEscrow {:buyerAddress  "0x56789"
-                               :sellerAddress "0x987654"
-                               :amount        "500"}}
-               (core/omega sell-range-state counterpart-address-event)))))
-    (testing "set counterpart address after range amount for buyer"
-      (let [next-state (core/delta buy-range-state counterpart-address-event)]
-        (is (= {:amount         "500"
-                :participants   ["username" "counterpart"]
-                :state          "waitingFunding"
-                :orderMessageId 501
-                :sell           false
-                :status         "active"
-                :lastMessageId  1113
-                :buyer          {:username "username"
-                                 :chatId   987654
-                                 :address  "0x987654"}
-                :range          true
-                :seller         {:username "counterpart"
-                                 :chatId   56789
-                                 :address  "0x56789"}
-                :orderId        "orderId123"}
-               next-state))
-        (is (= {:createEscrow {:buyerAddress  "0x987654"
-                               :sellerAddress "0x56789"
-                               :amount        "500"}}
-               (core/omega buy-range-state counterpart-address-event)))))
-    (testing "counterpart mismatch"
-      (let [next-state (core/delta buy-state mismatch-event)]
-        (is (= {:amount         "100"
-                :participants   ["username" "counterpart"]
-                :state          "watingCounterpartAddress"
-                :orderMessageId 501
-                :sell           false
-                :status         "active"
-                :lastMessageId  1113
-                :error          "counterpart does not match previous data"
-                :buyer          {:username "username"
-                                 :chatId   987654
-                                 :address  "0x987654"}
-                :range          false
-                :seller         {:username "counterpart"
-                                 :chatId   56789}
-                :orderId        "orderId123"}
-               next-state))
-        (is (= {:createEscrow {:buyerAddress  "0x987654"
-                               :sellerAddress "0x9999"
-                               :amount        "100"}}
-               (core/omega buy-state mismatch-event)))))))
+                                              :chatId   56789
+                                              :address  "0x999999"}}}]
+    (testing "valid counterpart addresses request a quote lock"
+      (is (= "waitingFunding" (:state (core/delta sell-state direct-event))))
+      (is (= {:lockQuote {:amount "100"
+                          :premiumPct "2.5"
+                          :sell true
+                          :makerDenomination "USDC"
+                          :asset "USDC"}}
+             (core/omega sell-state direct-event)))
+      (is (= "waitingFunding" (:state (core/delta buy-state text-event))))
+      (is (= {:lockQuote {:amount "1800"
+                          :premiumPct "-1"
+                          :sell false
+                          :makerDenomination "MXN"
+                          :asset "USDC"}}
+             (core/omega buy-state text-event)))
+      (is (= {:lockQuote {:amount "250.5"
+                          :premiumPct "2.5"
+                          :sell true
+                          :makerDenomination "USDC"
+                          :asset "USDC"}}
+             (core/omega range-state direct-event))))
+    (testing "invalid addresses and counterpart mismatches are rejected"
+      (is (= "Invalid address" (:error (core/delta buy-state invalid-text-event))))
+      (is (= {:reply ["Invalid address, please try again"]}
+             (core/omega buy-state invalid-text-event)))
+      (is (= "counterpart does not match previous data"
+             (:error (core/delta sell-state mismatch-event))))
+      (is (= {:error "counterpart does not match previous data"}
+             (core/omega sell-state mismatch-event))))
+    (testing "cancel notifies the existing counterpart"
+      (is (= "canceled" (:state (core/delta sell-state {:event "cancel"
+                                                        :data  {:username username}}))))
+      (is (= {:reply ["Order canceled succesfully"]
+              :sendMessage [{:chatId 56789
+                             :text "Seller canceled the order"}]}
+             (core/omega sell-state {:event "cancel"
+                                     :data  {:username username}}))))))
 
 (deftest waiting-funding-transitions
-  (let [sell-funding-state (transit-events s0 [(assoc base-event :event "sell")
-                                               {:event "setAmount"
-                                                :data  {:text      "100"
-                                                        :messageId 1111}}
-                                               {:event "setAddress"
-                                                :data  {:text      "0x1231231213"
-                                                        :user      user
-                                                        :messageId 1112}}
-                                               {:event "setMessagesIds"
-                                                :data  {:messageId      1113
-                                                        :orderMessageId 501}}
-                                               {:event "takeOrder"
-                                                :data  {:counterpart counterpart}}
-                                               {:event "setCounterpartAddress"
-                                                :data  {:counterpart (assoc counterpart
-                                                                            :address "0x56789")}}])
-        buy-funding-state (transit-events s0 [(assoc base-event :event "buy")
-                                              {:event "setAmount"
-                                               :data  {:text      "100"
-                                                       :messageId 1111}}
-                                              {:event "setAddress"
-                                               :data  {:text      "0x1231231213"
-                                                       :user      user
-                                                       :messageId 1112}}
-                                              {:event "setMessagesIds"
-                                               :data  {:messageId      1113
-                                                       :orderMessageId 501}}
-                                              {:event "takeOrder"
-                                               :data  {:counterpart counterpart}}
-                                              {:event "setCounterpartAddress"
-                                               :data  {:counterpart (assoc counterpart
-                                                                           :address "0x56789")}}])
-        set-escrow-event {:event "setEscrowAddress"
-                          :data  {:escrow    "0xescrow123"
-                                  :escrowUrl "escrowurl"}}
-        escrow-created-event {:event "escrowCreated"
-                              :data  {:escrow    "0xescrow123"
-                                      :escrowUrl "escrowurl"}}
-        escrow-creation-failed-event {:event "escrowCreationFailed"
-                                      :data  {}}
-        escrow-funded-event {:event "escrowFunded"
-                             :data  {}}
-        escrow-funding-failed-event {:event "escrowFundingFailed"
-                                     :data  {}}
-        sell-with-escrow (core/delta sell-funding-state set-escrow-event)
-        buy-with-escrow (core/delta buy-funding-state set-escrow-event)]
-    (testing "set escrow address transition"
-      (is (= {:amount         "100"
-              :escrowAddress  "0xescrow123"
-              :participants   ["username" "counterpart"]
-              :state          "waitingFunding"
-              :orderMessageId 501
-              :sell           true
-              :status         "active"
-              :lastMessageId  1113
-              :buyer          {:username "counterpart"
-                               :chatId   56789
-                               :address  "0x56789"}
-              :range          false
-              :seller         {:username "username"
-                               :chatId   987654
-                               :address  "0x987654"}
-              :orderId        "orderId123"}
-             sell-with-escrow))
-      (is (= {:sendMessage [{:chatId    56789
-                             :parseMode "Markdown"
-                             :text      "Escrow created, click [here](escrowurl) to see the details. Wating for seller to fund escrow contract"}
-                            {:chatId    987654
-                             :parseMode "Markdown"
-                             :text      "Escrow created, click [here](escrowurl) to see the details. Deposit 100 and then type /funded to continue"}
-                            {:chatId 987654
-                             :text   "0xescrow123"}]}
-             (core/omega sell-funding-state set-escrow-event))))
-    (testing "escrow created transition alias"
-      (is (= sell-with-escrow
-             (core/delta sell-funding-state escrow-created-event)))
-      (is (= (core/omega sell-funding-state set-escrow-event)
-             (core/omega sell-funding-state escrow-created-event))))
-    (testing "escrow creation failed keeps state and replies"
-      (is (= sell-funding-state
-             (core/delta sell-funding-state escrow-creation-failed-event)))
-      (is (= {:reply ["Sorry, we couldn't create the escrow contract. Please contact support."]}
-             (core/omega sell-funding-state escrow-creation-failed-event))))
-    (testing "escrow funded for seller"
-      (let [next-state (core/delta sell-with-escrow escrow-funded-event)]
-        (is (= {:amount         "100"
-                :escrowAddress  "0xescrow123"
-                :participants   ["username" "counterpart"]
-                :state          "waitingRelease"
-                :orderMessageId 501
-                :sell           true
-                :status         "active"
-                :lastMessageId  1113
-                :buyer          {:username "counterpart"
-                                 :chatId   56789
-                                 :address  "0x56789"}
-                :range          false
-                :seller         {:username "username"
-                                 :chatId   987654
-                                 :address  "0x987654"}
-                :orderId        "orderId123"}
-               next-state))
-        (is (= {:sendMessage [{:chatId 987654
-                               :text   "Escrow funded succesfully. Contact @counterpart to agree on fiat transfer details. Type /release ONLY after you have confirmed the reception of funds"}
-                              {:chatId 56789
-                               :text   "Seller has funded the escrow account. Contact @username to agree on fiat transfer details"}]}
-               (core/omega sell-with-escrow escrow-funded-event)))))
-    (testing "escrow funded for buyer"
-      (let [next-state (core/delta buy-with-escrow escrow-funded-event)]
-        (is (= {:amount         "100"
-                :escrowAddress  "0xescrow123"
-                :participants   ["username" "counterpart"]
-                :state          "waitingRelease"
-                :orderMessageId 501
-                :sell           false
-                :status         "active"
-                :lastMessageId  1113
-                :buyer          {:username "username"
-                                 :chatId   987654
-                                 :address  "0x987654"}
-                :range          false
-                :seller         {:username "counterpart"
-                                 :chatId   56789
-                                 :address  "0x56789"}
-                :orderId        "orderId123"}
-               next-state))
-        (is (= {:sendMessage [{:chatId 56789
-                               :text   "Escrow funded succesfully. Contact @username to agree on fiat transfer details. Type /release ONLY after you have confirmed the reception of funds"}
-                              {:chatId 987654
-                               :text   "Seller has funded the escrow account. Contact @counterpart to agree on fiat transfer details"}]}
-               (core/omega buy-with-escrow escrow-funded-event)))))
-    (testing "escrow funding failed keeps state and asks seller to confirm deposit"
-      (is (= sell-with-escrow
-             (core/delta sell-with-escrow escrow-funding-failed-event)))
-      (is (= {:sendMessage [{:chatId 987654
-                             :text   "Please confirm you deposited 100 XOC in the escrow address 0xescrow123"}]}
-             (core/omega sell-with-escrow escrow-funding-failed-event))))))
-
-(deftest completed-order-transition
-  (let [release-state (transit-events s0 [(assoc base-event :event "sell")
-                                          {:event "setAmount"
-                                           :data  {:text      "100"
-                                                   :messageId 1111}}
-                                          {:event "setAddress"
-                                           :data  {:text      "0x1231231213"
-                                                   :user      user
-                                                   :messageId 1112}}
-                                          {:event "setMessagesIds"
-                                           :data  {:messageId      1113
-                                                   :orderMessageId 501}}
-                                          {:event "takeOrder"
-                                           :data  {:counterpart counterpart}}
-                                          {:event "setCounterpartAddress"
-                                           :data  {:counterpart (assoc counterpart
-                                                                   :address "0x56789")}}
-                                          {:event "setEscrowAddress"
-                                           :data  {:escrow    "0xescrow123"
-                                                   :escrowUrl "escrowurl"}}
-                                          {:event "escrowFunded"
-                                           :data  {}}])
-        funds-released-event {:event "fundsReleased"
-                              :data  {:explorerUrl "explorerUrl"}}]
-    (let [next-state (core/delta release-state funds-released-event)]
-      (is (= {:amount         "100"
-              :escrowAddress  "0xescrow123"
-              :participants   ["username" "counterpart"]
-              :state          "finished"
-              :orderMessageId 501
-              :sell           true
-              :status         "done"
-              :lastMessageId  1113
-              :buyer          {:username "counterpart"
-                               :chatId   56789
-                               :address  "0x56789"}
-              :range          false
-              :seller         {:username "username"
-                               :chatId   987654
-                               :address  "0x987654"}
-              :orderId        "orderId123"}
-             next-state))
+  (let [sell-state (waiting-funding-state "sell" "100" "2.5")
+        buy-state (waiting-funding-state "buy" "1800" "-1")
+        quoted-sell-state (quoted-state "sell" "100" "2.5")
+        quoted-buy-state (quoted-state "buy" "1800" "-1")
+        with-escrow-state (core/delta quoted-sell-state escrow-created-event)
+        no-seller-chat-state (assoc with-escrow-state :seller {:username "username"
+                                                               :address  "0x987654"})]
+    (testing "quote lock success and failure stay in waitingFunding"
+      (is (= "waitingFunding" (:state (core/delta sell-state quote-event))))
+      (is (= {:createEscrow {:buyerAddress "0x123456"
+                             :sellerAddress "0x987654"
+                             :amount "250.500000"}}
+             (core/omega sell-state quote-event)))
+      (is (= sell-state
+             (core/delta sell-state {:event "quoteLockFailed"})))
+      (is (= {:reply ["Unable to lock the quote right now. Please try again later."]}
+             (core/omega sell-state {:event "quoteLockFailed"}))))
+    (testing "escrow creation aliases send the same funding instructions"
+      (is (= "0xescrow" (:escrowAddress with-escrow-state)))
+      (is (= with-escrow-state
+             (core/delta quoted-sell-state {:event "setEscrowAddress"
+                                            :data  {:escrow "0xescrow"
+                                                    :escrowUrl "https://basescan.org/address/0xescrow"}})))
       (is (= {:sendMessage [{:chatId 56789
-                             :text "Transaction [completed](explorerUrl)! Thanks for using our bot!"
+                             :parseMode "Markdown"
+                             :text "Escrow created, click [here](https://basescan.org/address/0xescrow) to see the details. Locked rate: 18.45 MXN/USDC. Seller deposits 250.500000 USDC. Buyer pays 4621.72 MXN. Waiting for seller to fund escrow contract"}
+                            {:chatId 987654
+                             :parseMode "Markdown"
+                             :text "Escrow created, click [here](https://basescan.org/address/0xescrow) to see the details. Locked rate: 18.45 MXN/USDC. Seller deposits 250.500000 USDC. Buyer pays 4621.72 MXN. Deposit 250.500000 USDC and then type /funded to continue"}
+                            {:chatId 987654
+                             :text "0xescrow"}]}
+             (core/omega quoted-sell-state escrow-created-event))))
+    (testing "escrow creation failures and funding failures reply appropriately"
+      (is (= quoted-sell-state
+             (core/delta quoted-sell-state {:event "escrowCreationFailed"})))
+      (is (= {:reply ["Sorry, we couldn't create the escrow contract. Please contact support."]}
+             (core/omega quoted-sell-state {:event "escrowCreationFailed"})))
+      (is (= with-escrow-state
+             (core/delta with-escrow-state {:event "escrowFundingFailed"})))
+      (is (= {:sendMessage [{:chatId 987654
+                             :text "Please confirm you deposited 250.500000 USDC in the escrow address 0xescrow"}]}
+             (core/omega with-escrow-state {:event "escrowFundingFailed"})))
+      (is (= {:reply ["Unable to verify the escrow funding transaction. Please try again."]}
+             (core/omega no-seller-chat-state {:event "escrowFundingFailed"}))))
+    (testing "escrow funded transitions to waitingRelease for both sides"
+      (is (= {:state  "waitingRelease"
+              :status "active"}
+             (select-keys (core/delta with-escrow-state {:event "escrowFunded"}) [:state :status])))
+      (is (= {:sendMessage [{:chatId 987654
+                             :text "Escrow funded succesfully. Contact @counterpart to agree on fiat transfer details. Type /release ONLY after you have confirmed the reception of funds"}
+                            {:chatId 56789
+                             :text "Seller has funded the escrow account. Contact @username to agree on fiat transfer details"}]}
+             (core/omega with-escrow-state {:event "escrowFunded"})))
+      (is (= {:sendMessage [{:chatId 56789
+                             :text "Escrow funded succesfully. Contact @username to agree on fiat transfer details. Type /release ONLY after you have confirmed the reception of funds"}
+                            {:chatId 987654
+                             :text "Seller has funded the escrow account. Contact @counterpart to agree on fiat transfer details"}]}
+             (core/omega (core/delta quoted-buy-state escrow-created-event) {:event "escrowFunded"}))))
+    (testing "cancel while waiting funding requests an escrow refund when available"
+      (let [state-with-escrow (assoc with-escrow-state :escrowAddress "0xescrow")]
+        (is (= "canceled" (:state (core/delta state-with-escrow {:event "cancel"
+                                                                 :data  {:username username}}))))
+        (is (= {:reply ["Order canceled succesfully"]
+                :sendMessage [{:chatId 56789
+                               :text "Seller canceled the order"}]
+                :cancelEscrow {:escrowAddress "0xescrow"
+                               :markAsFundedFirst true}}
+               (core/omega state-with-escrow {:event "cancel"
+                                              :data  {:username username}})))))))
+
+(deftest waiting-release-transitions
+  (let [sell-release-state (waiting-release-state "sell" "100" "2.5")
+        buy-release-state (waiting-release-state "buy" "1800" "-1")
+        release-failed-event {:event "releaseFailed"}
+        complete-event {:event "fundsReleased"
+                        :data  {:explorerUrl "https://basescan.org/tx/0xtx"}}]
+    (testing "release failures stay in waitingRelease and notify both parties"
+      (is (= sell-release-state
+             (core/delta sell-release-state release-failed-event)))
+      (is (= {:sendMessage [{:chatId 987654
+                             :text "There was an error releasing the funds. Please try again or contact support"}
+                            {:chatId 56789
+                             :text "There was an error releasing the funds. Wait for the seller to release again or contact support"}]}
+             (core/omega sell-release-state release-failed-event))))
+    (testing "successful release completes the order"
+      (is (= {:state  "finished"
+              :status "done"}
+             (select-keys (core/delta sell-release-state complete-event) [:state :status])))
+      (is (= {:sendMessage [{:chatId 56789
+                             :text "Transaction [completed](https://basescan.org/tx/0xtx)! Thanks for using our bot!"
                              :parseMode "Markdown"}
                             {:chatId 987654
-                             :text "Transaction [completed](explorerUrl)! Thanks for using our bot!"
+                             :text "Transaction [completed](https://basescan.org/tx/0xtx)! Thanks for using our bot!"
                              :parseMode "Markdown"}]}
-             (core/omega release-state funds-released-event))))))
-
-(deftest release-failed-transition
-  (let [release-state (transit-events s0 [(assoc base-event :event "sell")
-                                          {:event "setAmount"
-                                           :data  {:text      "100"
-                                                   :messageId 1111}}
-                                          {:event "setAddress"
-                                           :data  {:text      "0x1231231213"
-                                                   :user      user
-                                                   :messageId 1112}}
-                                          {:event "setMessagesIds"
-                                           :data  {:messageId      1113
-                                                   :orderMessageId 501}}
-                                          {:event "takeOrder"
-                                           :data  {:counterpart counterpart}}
-                                          {:event "setCounterpartAddress"
-                                           :data  {:counterpart (assoc counterpart
-                                                                   :address "0x56789")}}
-                                          {:event "escrowCreated"
-                                           :data  {:escrow    "0xescrow123"
-                                                   :escrowUrl "escrowurl"}}
-                                          {:event "escrowFunded"
-                                           :data  {}}])
-        release-failed-event {:event "releaseFailed"
-                              :data  {}}]
-    (is (= release-state
-           (core/delta release-state release-failed-event)))
-    (is (= {:sendMessage [{:chatId 987654
-                           :text   "There was an error releasing the funds. Please try again or contact support"}
-                          {:chatId 56789
-                           :text   "There was an error releasing the funds. Wait for the seller to release again or contact support"}]}
-           (core/omega release-state release-failed-event)))))
-
-(deftest cancel-transitions-after-order-is-created
-  (let [open-order-state (transit-events s0 [(assoc base-event :event "sell")
-                                             {:event "setAmount"
-                                              :data  {:text      "100"
-                                                      :messageId 1111}}
-                                             {:event "setAddress"
-                                              :data  {:text      "0x1231231213"
-                                                      :user      user
-                                                      :messageId 1112}}
-                                             {:event "setMessagesIds"
-                                              :data  {:messageId      1113
-                                                      :orderMessageId 501}}])
-        taken-order-state (transit-events s0 [(assoc base-event :event "sell")
-                                              {:event "setAmount"
-                                               :data  {:text      "100"
-                                                       :messageId 1111}}
-                                              {:event "setAddress"
-                                               :data  {:text      "0x1231231213"
-                                                       :user      user
-                                                       :messageId 1112}}
-                                              {:event "setMessagesIds"
-                                               :data  {:messageId      1113
-                                                       :orderMessageId 501}}
-                                              {:event "takeOrder"
-                                               :data  {:counterpart counterpart
-                                                       :takerChatId 56789}}])
-        funding-state (transit-events s0 [(assoc base-event :event "sell")
-                                          {:event "setAmount"
-                                           :data  {:text      "100"
-                                                   :messageId 1111}}
-                                          {:event "setAddress"
-                                           :data  {:text      "0x1231231213"
-                                                   :user      user
-                                                   :messageId 1112}}
-                                          {:event "setMessagesIds"
-                                           :data  {:messageId      1113
-                                                   :orderMessageId 501}}
-                                          {:event "takeOrder"
-                                           :data  {:counterpart counterpart
-                                                   :takerChatId 56789}}
-                                          {:event "setCounterpartAddress"
-                                           :data  {:counterpart (assoc counterpart
-                                                                   :address "0x56789")}}
-                                          {:event "setEscrowAddress"
-                                           :data  {:escrow    "0xescrow123"
-                                                   :escrowUrl "escrowurl"}}])
-        release-state (transit-events funding-state [{:event "escrowFunded"}])
-        seller-cancel-event {:event "cancel"
-                             :data  {:username "username"}}
-        buyer-cancel-event {:event "cancel"
-                            :data  {:username "counterpart"}}]
-    (testing "cancel open order removes orderbook message"
-      (let [next-state (core/delta open-order-state seller-cancel-event)]
-        (is (= "canceled" (:state next-state)))
-        (is (= "canceled" (:status next-state)))
-        (is (= {:reply         ["Order canceled succesfully"]
-                :deleteMessage [{:chat "channel"
-                                 :id   501}]}
-               (core/omega open-order-state seller-cancel-event)))))
-    (testing "cancel taken order notifies counterpart"
-      (let [next-state (core/delta taken-order-state seller-cancel-event)]
-        (is (= "canceled" (:state next-state)))
-        (is (= "canceled" (:status next-state)))
-        (is (= {:reply       ["Order canceled succesfully"]
-                :sendMessage [{:chatId 56789
-                               :text   "Seller canceled the order"}]}
-               (core/omega taken-order-state seller-cancel-event)))))
-    (testing "cancel funded-pending order requests escrow refund"
-      (let [next-state (core/delta funding-state buyer-cancel-event)]
-        (is (= "canceled" (:state next-state)))
-        (is (= "canceled" (:status next-state)))
-        (is (= {:reply        ["Order canceled succesfully"]
-                :cancelEscrow {:escrowAddress      "0xescrow123"
-                               :markAsFundedFirst true}
-                :sendMessage  [{:chatId 987654
-                                :text   "Buyer canceled the order"}]}
-               (core/omega funding-state buyer-cancel-event)))))
-    (testing "cancel released-pending order requests direct refund"
-      (let [next-state (core/delta release-state seller-cancel-event)]
-        (is (= "canceled" (:state next-state)))
-        (is (= "canceled" (:status next-state)))
-        (is (= {:reply        ["Order canceled succesfully"]
-                :cancelEscrow {:escrowAddress      "0xescrow123"
-                               :markAsFundedFirst false}
-                :sendMessage  [{:chatId 56789
-                                :text   "Seller canceled the order"}]}
-               (core/omega release-state seller-cancel-event)))))))
-
-(deftest set-last-message-id-transitions
-
-  (testing "set-last-message-id should be idempotent on state"
-    (is (= {:state         "waitingNewOrderAmount"
-            :status        "active"
-            :orderId       "orderId123"
-            :buyer         {:username "username"}
-            :participants  ["username"]
-            :sell          false
-            :lastMessageId 1111}
-           (transit-events s0 [(assoc base-event :event "buy")
-                               {:event "setLastMessageId"
-                                :data  {:messageId 1111}}])))
-
-    (is (= {:amount        "100-1000"
-            :participants  ["username"]
-            :state         "waitingSetAddress"
-            :sell          false
-            :status        "active"
-            :lastMessageId nil
-            :buyer         {:username "username"}
-            :range         true
-            :orderId       "orderId123"}
-           (transit-events s0 [(assoc base-event :event "buy")
-                               {:event "setLastMessageId"
-                                :data  {:messageId 1111}}
-                               {:event "setAmount"
-                                :data  {:text "100-1000"}}])))
-
-    (is (= {:amount        "100-1000"
-            :participants  ["username"]
-            :state         "waitingSetAddress"
-            :sell          false
-            :status        "active"
-            :lastMessageId 1112
-            :buyer         {:username "username"}
-            :range         true
-            :orderId       "orderId123"}
-           (transit-events s0 [(assoc base-event :event "buy")
-                               {:event "setLastMessageId"
-                                :data  {:messageId 1111}}
-                               {:event "setAmount"
-                                :data  {:text "100-1000"}}
-                               {:event "setLastMessageId"
-                                :data  {:messageId 1112}}])))
-
-    (is (= {:amount         "100-1000"
-            :participants   ["username"]
-            :state          "watingCounterpart"
-            :orderMessageId 501
-            :sell           false
-            :status         "active"
-            :lastMessageId  1113
-            :buyer          {:username "username"
-                             :chatId   987654
-                             :address  "0x987654"}
-            :range          true
-            :orderId        "orderId123"}
-           (transit-events s0 [(assoc base-event :event "buy")
-                               {:event "setLastMessageId"
-                                :data  {:messageId 1111}}
-                               {:event "setAmount"
-                                :data  {:text "100-1000"}}
-                               {:event "setLastMessageId"
-                                :data  {:messageId 1112}}
-                               {:event "setAddress"
-                                :data  {:text "0x1231231213"
-                                        :user user}}
-                               {:event "setMessagesIds"
-                                :data  {:messageId      1113
-                                        :orderMessageId 501}}])))))
-
-(deftest text-input-transitions
-  (let [buy-state (core/delta s0 (assoc base-event :event "buy"))
-        amount-state (transit-events s0 [(assoc base-event :event "buy")
-                                         {:event "setAmount"
-                                          :data  {:text      "100"
-                                                  :messageId 1111}}
-                                         {:event "setLastMessageId"
-                                          :data  {:messageId 1112}}])
-        counterpart-state (transit-events s0 [(assoc base-event :event "sell")
-                                              {:event "setAmount"
-                                               :data  {:text      "100"
-                                                       :messageId 1111}}
-                                              {:event "setAddress"
-                                               :data  {:text      "0x1231231213"
-                                                       :user      user
-                                                       :messageId 1112}}
-                                              {:event "setMessagesIds"
-                                               :data  {:messageId      1113
-                                                       :orderMessageId 501}}
-                                              {:event "takeOrder"
-                                               :data  {:counterpart counterpart
-                                                       :takerChatId 56789}}])
-        amount-text-event {:event "textInput"
-                           :data  {:text "100-1000"}}
-        invalid-amount-text-event {:event "textInput"
-                                   :data  {:text "not-valid"}}
-        address-text-event {:event "textInput"
-                            :data  {:text "0x987654"
-                                    :user user}}
-        invalid-address-text-event {:event "textInput"
-                                    :data  {:text "invalid-address"
-                                            :user user}}
-        counterpart-address-event {:event "textInput"
-                                   :data  {:text "0x56789"
-                                           :counterpart (assoc counterpart :address "0x56789")}}]
-    (testing "text input maps to amount during new order creation"
-      (is (= {:amount        "100-1000"
-              :participants  ["username"]
-              :state         "waitingSetAddress"
-              :sell          false
-              :status        "active"
-              :lastMessageId nil
-              :buyer         {:username "username"}
-              :range         true
-              :orderId       "orderId123"}
-             (core/delta buy-state amount-text-event)))
-      (is (= {:reply ["Invalid range or number"]}
-             (core/omega buy-state invalid-amount-text-event))))
-    (testing "text input maps to address during owner setup"
-      (is (= "watingCounterpart"
-             (:state (core/delta amount-state address-text-event))))
-      (is (= {:reply ["Invalid address, please try again"]}
-             (core/omega amount-state invalid-address-text-event))))
-    (testing "text input maps to counterpart address"
-      (is (= "waitingFunding"
-             (:state (core/delta counterpart-state counterpart-address-event))))
-      (is (= {:reply ["Invalid address, please try again"]}
-             (core/omega counterpart-state {:event "textInput"
-                                            :data  {:text "invalid-address"
-                                                    :counterpart counterpart}}))))))
+             (core/omega sell-release-state complete-event))))
+    (testing "cancel while waitingRelease requests a direct refund path"
+      (is (= "canceled" (:state (core/delta buy-release-state {:event "cancel"
+                                                               :data  {:username username}}))))
+      (is (= {:reply ["Order canceled succesfully"]
+              :sendMessage [{:chatId 56789
+                             :text "Buyer canceled the order"}]
+              :cancelEscrow {:escrowAddress "0xescrow"
+                             :markAsFundedFirst false}}
+             (core/omega buy-release-state {:event "cancel"
+                                            :data  {:username username}}))))))

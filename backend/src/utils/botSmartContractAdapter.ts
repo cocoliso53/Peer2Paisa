@@ -1,13 +1,15 @@
 import { parseUnits } from "viem";
 import { createEscrow, markAsFunded, confirmFiatReceived, refundSeller, checkAmount, swapEscrow } from "../escrow/main";
 
+const USDC_DECIMALS = 6
+
 type CancelEscrowResult =
     | { status: 'not_needed' }
     | { status: 'refunded', txHash: string }
     | { status: 'failed' }
 
-export const createEscrowFromBot = async (sellerAddres: string, buyerAddress: string, amountXOC: string) => {
-    const parsedAmount = parseUnits(amountXOC, 18) // NOTE: We are hardcoding 6 here, would be better to cerate a const file or something
+export const createEscrowFromBot = async (sellerAddres: string, buyerAddress: string, amountUsdc: string) => {
+    const parsedAmount = parseUnits(amountUsdc, USDC_DECIMALS)
     const escrowAddress = await createEscrow(sellerAddres, buyerAddress, parsedAmount)
     return escrowAddress
 }

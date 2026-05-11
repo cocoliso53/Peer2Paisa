@@ -6,6 +6,7 @@ dotenv.config({
 import { Telegraf, Markup } from "telegraf";
 import { createHash, randomUUID } from 'crypto';
 import { cancelEscrowFromBot, confirmFiatReceivedFromBot, createEscrowFromBot, markAsFundedFromBot } from '../utils/botSmartContractAdapter';
+import { lockMockQuote } from '../pricing/mock';
 import { deltaWrapped } from '../utils/cljs-wrapper'
 import { getOrderById, updateOrder, getActiveOrderByParticipant, getActiveOrderByParticipantAndState } from '../db';
 import type {
@@ -196,6 +197,66 @@ const applyFsmEvent = async (
         state: stateToPersist,
         effects,
         effectResponse,
+    }
+}
+
+const resolveAsyncWorkflowEffects = async (
+    ctx: BotRuntimeContext,
+    initialState: OrderDocument,
+    initialEffects: FsmEffects,
+): Promise<OrderDocument> => {
+    let currentState = initialState
+    let currentEffects = initialEffects
+
+    while (true) {
+        if (currentEffects.lockQuote) {
+            try {
+                const quote = lockMockQuote(currentEffects.lockQuote)
+                const result = await applyFsmEvent(ctx, currentState, {
+                    event: 'quoteLocked',
+                    data: quote,
+                })
+                currentState = result.state
+                currentEffects = result.effects
+                continue
+            } catch (error) {
+                const result = await applyFsmEvent(ctx, currentState, {
+                    event: 'quoteLockFailed',
+                })
+                currentState = result.state
+                currentEffects = result.effects
+                continue
+            }
+        }
+
+        if (currentEffects.createEscrow) {
+            let escrowAddress: string | undefined
+
+            try {
+                const { buyerAddress, sellerAddress, amount } = currentEffects.createEscrow
+                escrowAddress = await createEscrowFromBot(sellerAddress, buyerAddress, amount)
+            } catch (error) {
+                console.error('Unable to create escrow', error)
+            }
+
+            const result = escrowAddress
+                ? await applyFsmEvent(ctx, currentState, {
+                    event: 'escrowCreated',
+                    data: {
+                        escrow: escrowAddress,
+                        escrowUrl: `${explorerBaseURL}/address/${escrowAddress}`,
+                    },
+                })
+                : await applyFsmEvent(ctx, currentState, {
+                    event: 'escrowCreationFailed',
+                })
+
+            currentState = result.state
+            currentEffects = result.effects
+            continue
+        }
+
+        return currentState
     }
 }
 
@@ -424,6 +485,7 @@ bot.on('text', async ctx => {
     const eventObject: Extract<FsmEvent, { event: 'textInput' }> | null = (() => {
         const supportedStates: OrderState[] = [
             'waitingNewOrderAmount',
+            'waitingPremium',
             'waitingSetAddress',
             'watingCounterpartAddress',
             'watingCounterpartSetAmount',
@@ -451,27 +513,7 @@ bot.on('text', async ctx => {
         persistGeneratedMessages: true,
     });
 
-    if (stateToPersist.state === "waitingFunding" && effects.createEscrow) {
-        const { buyerAddress, sellerAddress, amount } = effects.createEscrow;
-        const escrowAddress = await createEscrowFromBot(sellerAddress, buyerAddress, amount);
-
-        if (!escrowAddress) {
-            await applyFsmEvent(ctx, stateToPersist, {
-                event: "escrowCreationFailed",
-            });
-            return;
-        }
-
-        const escrowURL = explorerBaseURL + `/address/${escrowAddress}`;
-
-        await applyFsmEvent(ctx, stateToPersist, {
-            event: "escrowCreated",
-            data: {
-                escrow: escrowAddress,
-                escrowUrl: escrowURL,
-            },
-        });
-    }
+    await resolveAsyncWorkflowEffects(ctx, stateToPersist, effects)
 });
 
 bot.action(/^take:(.+)$/, async ctx => {

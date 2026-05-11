@@ -5,9 +5,9 @@ dotenv.config({
   path: path.resolve(__dirname, '../../.env'),
 })
 
-import { createPublicClient, createWalletClient, http, parseUnits, parseEventLogs, Address } from 'viem'
+import { createPublicClient, createWalletClient, http, parseEventLogs, Address } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { arbitrum, base} from 'viem/chains'
+import { base } from 'viem/chains'
 import { SimpleEscrowAbi } from './abi/SimpleEscrow'
 import { EscrowFactoryAbi } from './abi/EscrowFactory'
 import { SwapEscrowAbi } from './abi/SwapEscrowAbi'
@@ -18,8 +18,8 @@ const alchemyURL = process.env.ALCHEMY_URL
 const factoryAddress = process.env.FACTORY_ADDRESS
 const QUOTER_ADDR = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6" as Address
 const SLIPPAGE_BPS  = 50
-const selectedChain = base // or arbitrum
-const tokenAddress = "0xa411c9Aa00E020e4f88Bc19996d29c5B7ADB4ACf" // Hardcoded XOC address
+const selectedChain = base
+const tokenAddress = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as Address
 
 
 const account = privateKeyToAccount(privateKey as `0x${string}`)

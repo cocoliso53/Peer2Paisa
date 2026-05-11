@@ -6,14 +6,25 @@ dotenv.config({
   path: path.resolve(__dirname, '../.env'),
 })
 
-const DB_USERNAME = process.env.DB_USERNAME 
-const DB_PASSWORD = process.env.DB_PASSWORD
+const getRequiredEnv = (name: string): string => {
+    const value = process.env[name]
+
+    if (!value) {
+        throw new Error(`Missing required environment variable: ${name}`)
+    }
+
+    return value
+}
+
+const COUCHDB_URL = getRequiredEnv('COUCHDB_URL')
+const DB_USERNAME = getRequiredEnv('DB_USERNAME')
+const DB_PASSWORD = getRequiredEnv('DB_PASSWORD')
 
 const couch = axios.create({
-    baseURL: 'http://127.0.0.1:5984',
+    baseURL: COUCHDB_URL,
     auth: {
-        username: DB_USERNAME!,
-        password: DB_PASSWORD!,
+        username: DB_USERNAME,
+        password: DB_PASSWORD,
     }
 })
 
@@ -120,4 +131,4 @@ export const getOrdersByParticipantAndStatus = async (
 }
 
 // DELETE curl command
-// curl -u user:pass -X DELETE   "http://127.0.0.1:5984/orders/GRBq2WvyoGXBwXJOwaqfrg?rev=1-eaf7143c0f911dfbf544a161e4bd1eac"
+// curl -u user:pass -X DELETE   "$COUCHDB_URL/orders/<orderId>?rev=<rev>"

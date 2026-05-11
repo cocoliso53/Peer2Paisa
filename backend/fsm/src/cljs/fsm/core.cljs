@@ -1,6 +1,4 @@
-(ns fsm.core
-  (:require ["fs" :as fs]
-            ["path" :as path]))
+(ns fsm.core)
 
 ;; State helpers
 
@@ -10,25 +8,73 @@
     m
     (assoc m :state new-state)))
 
+(def decimal-pattern-string "\\d+(?:\\.\\d+)?")
+(def decimal-pattern (re-pattern decimal-pattern-string))
+
 (defn range-amount?
   [input]
   (when (string? input)
-    (boolean (re-matches #"\d+-\d+" input))))
+    (boolean (re-matches (re-pattern (str decimal-pattern-string "-" decimal-pattern-string)) input))))
+
+(defn decimal-number?
+  [s]
+  (when (string? s)
+    (boolean (re-matches decimal-pattern s))))
 
 (defn number-or-range?
   [s]
   (when (string? s)
-    (boolean (re-matches #"\d+(-\d+)?" s))))
+    (or (decimal-number? s)
+        (range-amount? s))))
 
-(defn digits-only?
+(defn signed-decimal?
   [s]
   (when (string? s)
-    (boolean (re-matches #"\d+" s))))
+    (boolean (re-matches #"[+-]?\d+(?:\.\d+)?" s))))
 
 (defn address-like?
   [s]
   (when (string? s)
     (boolean (re-matches #"0x[a-fA-F0-9]+" s))))
+
+(defn parse-number
+  [value]
+  (when (decimal-number? value)
+    (js/parseFloat value)))
+
+(defn parse-range
+  [value]
+  (when (range-amount? value)
+    (let [[from to] (.split value "-")]
+      [(parse-number from) (parse-number to)])))
+
+(defn amount-in-range?
+  [range-input amount-input]
+  (let [[from to] (parse-range range-input)
+        amount    (parse-number amount-input)]
+    (and from to amount (<= from amount to))))
+
+(defn format-premium
+  [premium]
+  (if (and (string? premium) (not (.startsWith premium "-")) (not (.startsWith premium "+")))
+    (str "+" premium)
+    premium))
+
+(defn amount-unit-label
+  [{:keys [makerDenomination]}]
+  (or makerDenomination "USDC"))
+
+(defn order-book-text
+  [{:keys [sell amount makerDenomination premiumPct asset]}]
+  (if sell
+    (str "Selling " amount " " makerDenomination " at " (format-premium premiumPct) "% premium")
+    (str "Buying " asset " with " amount " " makerDenomination " at " (format-premium premiumPct) "% premium")))
+
+(defn locked-trade-summary
+  [{:keys [lockedRate lockedFiatAmount lockedTokenAmount asset]}]
+  (str "Locked rate: " lockedRate " MXN/" asset ". "
+       "Seller deposits " lockedTokenAmount " " asset ". "
+       "Buyer pays " lockedFiatAmount " MXN. "))
 
 (defn set-original-buyer-or-seller
   [state {{:keys [username messageId]} :data event :event}]
@@ -38,6 +84,8 @@
          ({"buy" :buyer "sell" :seller} event) {:username username}
          :participants [username]
          :sell (= event "sell")
+         :asset "USDC"
+         :makerDenomination (if (= event "sell") "USDC" "MXN")
          :lastMessageId messageId)
         (dissoc :error))
     (assoc state
@@ -56,8 +104,7 @@
            :error "Invalid range or number")))
 
 (defn set-owner-user-data
-  [{sell :sell :as state} {{:keys [text user messageId]} :data}]
-  ;; need to add address validation
+  [{sell :sell :as state} {{:keys [user messageId]} :data}]
   (if user
     (assoc state
            (if sell :seller :buyer) user
@@ -86,16 +133,24 @@
          :participants (conj participants (:username counterpart))))
 
 (defn set-counterpart-amount
-  [{amount :amount :as state} {{text :text} :data}]
-  ;; TODO: we would need to check if text is a valid amount
-  ;; and if it is an amount within the defined amount range
+  [state {{text :text} :data}]
   (assoc state :amount text))
 
 (defn set-counterpart-amount-from-text
-  [state {{:keys [text]} :data :as event}]
-  (if (digits-only? text)
+  [{range-input :amount :as state} {{:keys [text]} :data :as event}]
+  (if (and (decimal-number? text)
+           (amount-in-range? range-input text))
     (set-counterpart-amount state event)
     (assoc state :error "Invalid amount")))
+
+(defn set-premium
+  [state {{:keys [text messageId]} :data}]
+  (if (signed-decimal? text)
+    (-> state
+        (assoc :premiumPct text
+               :lastMessageId messageId)
+        (dissoc :error))
+    (assoc state :error "Invalid premium")))
 
 (defn set-owner-user-data-from-text
   [state {{:keys [text]} :data :as event}]
@@ -123,6 +178,15 @@
   [state {{escrow :escrow} :data}]
   (assoc state :escrowAddress escrow))
 
+(defn set-locked-quote
+  [state {{:keys [marketRate lockedRate lockedFiatAmount lockedTokenAmount]} :data}]
+  (-> state
+      (assoc :marketRate marketRate
+             :lockedRate lockedRate
+             :lockedFiatAmount lockedFiatAmount
+             :lockedTokenAmount lockedTokenAmount)
+      (dissoc :error)))
+
 (defn complete-order
   [state _]
   (assoc state
@@ -142,7 +206,9 @@
 
 (defn effect-original-buyer-or-seller
   [_ {event :event}]
-  (let [msg (str "Enter exact amount or range (eg. 100-1000) to " event)]
+  (let [msg (if (= event "sell")
+              "Enter exact USDC amount or range to sell (eg. 100 or 100-1000)"
+              "Enter exact MXN amount or range to buy with (eg. 1800 or 1800-18000)")]
     {:reply [msg]}))
 
 (defn effect-simple-cancel
@@ -168,12 +234,10 @@
     (merge base-effects notify-effects escrow-effects)))
 
 (defn effect-set-amount
-  [{lastMessageId :lastMessageId sell :sell} _]
+  [{lastMessageId :lastMessageId} _]
   (if lastMessageId
     {:deleteMessage [{:chat "current" :id lastMessageId}]
-     :reply         [(if sell
-                       "Enter address for refund (if necessary)"
-                       "Enter address to receive funds")]}
+     :reply         ["Enter premium percentage over market (eg. 2.5 or -1)"]}
     {:error "No lastMessageId"}))
 
 (defn effect-text-set-amount
@@ -183,11 +247,10 @@
     {:reply ["Invalid range or number"]}))
 
 (defn effect-set-address
-  [{:keys [sell amount orderId lastMessageId]} {{user :user text :text} :data}]
-  ;; we need to add a check for a valid address
+  [{:keys [orderId lastMessageId] :as state} _]
   {:reply            [(str "Order created: " orderId)]
    :deleteMessage    [{:chat "current" :id lastMessageId}]
-   :orderBookMessage [{:text     (str (if sell "Selling " "Buying ") amount)
+   :orderBookMessage [{:text     (order-book-text state)
                        :keyboard {:text     "Take Order"
                                   :callback (str "take:" orderId)}}]})
 
@@ -197,15 +260,30 @@
     (effect-set-address state event)
     {:reply ["Invalid address, please try again"]}))
 
+(defn effect-set-premium
+  [{lastMessageId :lastMessageId sell :sell} _]
+  (if lastMessageId
+    {:deleteMessage [{:chat "current" :id lastMessageId}]
+     :reply         [(if sell
+                       "Enter address for refund (if necessary)"
+                       "Enter address to receive funds")]}
+    {:error "No lastMessageId"}))
+
+(defn effect-text-set-premium
+  [state {{:keys [text]} :data :as event}]
+  (if (signed-decimal? text)
+    (effect-set-premium state event)
+    {:reply ["Invalid premium percentage, please try again"]}))
+
 (defn effect-take-order
-  [{:keys [sell range amount buyer seller orderId]} {{:keys [takerChatId]} :data}]
+  [{:keys [sell range amount buyer seller orderId] :as state} {{:keys [takerChatId]} :data}]
   (let [taker-message (if range
-                        (str "Select an amount between " amount)
+                        (str "Select an amount between " amount " " (amount-unit-label state))
                         (if sell
                           "Please enter the wallet where you want to receive the funds"
                           "Enter address for refund (if necessary)"))]
     {:deleteMessage [{:chat "ctx"}]
-     :answerCbQuery true
+     :answerQuery true
      :sendMessage [{:chatId (:chatId (if sell seller buyer))
                     :text (str "Order #" orderId
                                " has been taken. Waiting for the counter"
@@ -216,24 +294,27 @@
 (defn effect-set-counterpart-amount
   [{sell :sell :as state} _]
   {:reply [(if sell
-             "Please enter the wallet where you want to the funds"
+             "Please enter the wallet where you want to receive the funds"
              "Enter address for refund (if necessary)")]})
 
 (defn effect-text-set-counterpart-amount
-  [state {{:keys [text]} :data :as event}]
-  (if (digits-only? text)
+  [{range-input :amount :as state} {{:keys [text]} :data :as event}]
+  (if (and (decimal-number? text)
+           (amount-in-range? range-input text))
     (effect-set-counterpart-amount state event)
     {:reply ["Invalid amount, please try again"]}))
 
 (defn set-counterpart-address-effect
-  [{:keys [buyer seller sell amount]} {{:keys [counterpart]} :data}]
-  (let [[buyer-address
-         seller-address] (if sell
-                           [(:address counterpart) (:address seller)]
-                           [(:address buyer) (:address counterpart)])]
-    {:createEscrow {:buyerAddress  buyer-address
-                    :sellerAddress seller-address
-                    :amount        amount}}))
+  [state event]
+  (let [{:keys [amount premiumPct sell makerDenomination asset] :as next-state}
+        (set-counterpart-address state event)]
+    (if (:error next-state)
+      {:error (:error next-state)}
+      {:lockQuote {:amount             amount
+                   :premiumPct         premiumPct
+                   :sell               sell
+                   :makerDenomination  makerDenomination
+                   :asset              asset}})))
 
 (defn effect-text-set-counterpart-address
   [state {{:keys [text]} :data :as event}]
@@ -242,23 +323,39 @@
     {:reply ["Invalid address, please try again"]}))
 
 (defn set-escrow-address-effect
-  [{:keys [buyer seller amount]} {{:keys [escrow escrowUrl]} :data}]
+  [{:keys [buyer seller asset lockedTokenAmount] :as state} {{:keys [escrow escrowUrl]} :data}]
   (let [escrow-url-text (str "Escrow created, click [here]("
                              escrowUrl
                              ") to see the details. ")]
     {:sendMessage [{:chatId    (:chatId buyer)
                     :parseMode "Markdown"
                     :text      (str escrow-url-text
-                                    "Wating for seller to fund escrow contract")}
+                                    (locked-trade-summary state)
+                                    "Waiting for seller to fund escrow contract")}
                    {:chatId    (:chatId seller)
                     :parseMode "Markdown"
-                    ;; TODO: set currency later on
                     :text      (str escrow-url-text
+                                    (locked-trade-summary state)
                                     "Deposit "
-                                    amount
+                                    lockedTokenAmount
+                                    " "
+                                    asset
                                     " and then type /funded to continue")}
                    {:chatId (:chatId seller)
                    :text   escrow}]}))
+
+(defn quote-locked-effect
+  [{:keys [buyer seller sell]} {{:keys [lockedTokenAmount]} :data}]
+  (let [[buyer-address seller-address] (if sell
+                                         [(:address buyer) (:address seller)]
+                                         [(:address buyer) (:address seller)])]
+    {:createEscrow {:buyerAddress  buyer-address
+                    :sellerAddress seller-address
+                    :amount        lockedTokenAmount}}))
+
+(defn quote-lock-failed-effect
+  [_ _]
+  {:reply ["Unable to lock the quote right now. Please try again later."]})
 
 (defn escrow-creation-failed-effect
   [_ _]
@@ -276,12 +373,14 @@
                              " details")}]})
 
 (defn escrow-funding-failed-effect
-  [{:keys [seller amount escrowAddress]} _]
+  [{:keys [seller lockedTokenAmount asset escrowAddress]} _]
   (if (:chatId seller)
     {:sendMessage [{:chatId (:chatId seller)
                     :text   (str "Please confirm you deposited "
-                                 (or amount "the agreed")
-                                 " XOC in the escrow address "
+                                 (or lockedTokenAmount "the agreed")
+                                 " "
+                                 (or asset "USDC")
+                                 " in the escrow address "
                                  escrowAddress)}]}
     {:reply ["Unable to verify the escrow funding transaction. Please try again."]}))
 
@@ -329,17 +428,32 @@
    ["waitingNewOrderAmount"
     "setAmount"]        {:transition set-amount-or-range
                          :effects    effect-set-amount
-                         :to         "waitingSetAddress"}
+                         :to         "waitingPremium"}
    ["waitingNewOrderAmount"
     "textInput"]        {:transition set-amount-or-range
                          :effects    effect-text-set-amount
-                         :to         "waitingSetAddress"}
+                         :to         "waitingPremium"}
    ["waitingNewOrderAmount"
     "setLastMessageId"] {:transition set-last-message-id
                          :effects    no-effect
                          :to         "waitingNewOrderAmount"}
-   
    ["waitingNewOrderAmount"
+    "cancel"]           {:transition cancel-order
+                         :effects    effect-simple-cancel
+                         :to         "canceled"}
+   ["waitingPremium"
+    "setPremium"]       {:transition set-premium
+                         :effects    effect-set-premium
+                         :to         "waitingSetAddress"}
+   ["waitingPremium"
+    "textInput"]        {:transition set-premium
+                         :effects    effect-text-set-premium
+                         :to         "waitingSetAddress"}
+   ["waitingPremium"
+    "setLastMessageId"] {:transition set-last-message-id
+                         :effects    no-effect
+                         :to         "waitingPremium"}
+   ["waitingPremium"
     "cancel"]           {:transition cancel-order
                          :effects    effect-simple-cancel
                          :to         "canceled"}
@@ -409,6 +523,14 @@
                               :effects    effect-counterpart-cancel
                               :to         "canceled"}
    
+   ["waitingFunding"
+    "quoteLocked"]      {:transition set-locked-quote
+                         :effects    quote-locked-effect
+                         :to         "waitingFunding"}
+   ["waitingFunding"
+    "quoteLockFailed"]  {:transition identity
+                         :effects    quote-lock-failed-effect
+                         :to         "waitingFunding"}
    ["waitingFunding"
     "setEscrowAddress"] {:transition set-escrow-address
                          :effects    set-escrow-address-effect

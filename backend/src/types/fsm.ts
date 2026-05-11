@@ -3,6 +3,7 @@ export type OrderStatus = 'active' | 'canceled' | 'done'
 export type OrderState =
     | 's0'
     | 'waitingNewOrderAmount'
+    | 'waitingPremium'
     | 'waitingSetAddress'
     | 'watingCounterpart'
     | 'watingCounterpartSetAmount'
@@ -30,6 +31,13 @@ export type OrderDocument = {
     orderMessageId?: number
     amount?: string
     range?: boolean
+    asset?: 'USDC'
+    makerDenomination?: 'USDC' | 'MXN'
+    premiumPct?: string
+    marketRate?: string
+    lockedRate?: string
+    lockedFiatAmount?: string
+    lockedTokenAmount?: string
     buyer?: Participant
     seller?: Participant
     escrowAddress?: string
@@ -63,6 +71,14 @@ export type CreateEscrowEffect = {
     amount: string
 }
 
+export type LockQuoteEffect = {
+    amount: string
+    premiumPct: string
+    sell: boolean
+    makerDenomination: 'USDC' | 'MXN'
+    asset: 'USDC'
+}
+
 export type CancelEscrowEffect = {
     escrowAddress: string
     markAsFundedFirst?: boolean
@@ -72,6 +88,7 @@ export type FsmEffects = {
     reply?: string[]
     deleteMessage?: DeleteDetails[]
     orderBookMessage?: OrderBookMessage[]
+    lockQuote?: LockQuoteEffect
     createEscrow?: CreateEscrowEffect
     cancelEscrow?: CancelEscrowEffect
     sendMessage?: SendMessageData[]
@@ -115,6 +132,13 @@ export type FsmEvent =
         }
     }
     | {
+        event: 'setPremium'
+        data: {
+            text: string
+            messageId?: number
+        }
+    }
+    | {
         event: 'setAddress'
         data: {
             text: string
@@ -151,7 +175,16 @@ export type FsmEvent =
         }
     }
     | {
-        event: 'escrowCreationFailed' | 'escrowFunded' | 'escrowFundingFailed' | 'releaseFailed'
+        event: 'quoteLocked'
+        data: {
+            marketRate: string
+            lockedRate: string
+            lockedFiatAmount: string
+            lockedTokenAmount: string
+        }
+    }
+    | {
+        event: 'quoteLockFailed' | 'escrowCreationFailed' | 'escrowFunded' | 'escrowFundingFailed' | 'releaseFailed'
         data?: Record<string, never>
     }
     | {
