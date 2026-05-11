@@ -63,14 +63,18 @@ export const getOrderById = async (orderId: string): Promise<OrderDocument> => {
     }
 }
 
-export const updateOrder = async (basicOrder: OrderDocument): Promise<CouchWriteResponse> => {
+export const updateOrder = async (basicOrder: OrderDocument): Promise<OrderDocument> => {
     try {
         const { orderId } = basicOrder
         const { data } = await couch.put<CouchWriteResponse>(
             `/orders/${orderId}`,
             basicOrder
         )
-        return data
+        return {
+            ...basicOrder,
+            _id: data.id,
+            _rev: data.rev,
+        }
     } catch (err) {
         return handleCouchError(err, `updateOrder(${basicOrder?.orderId ?? 'unknown'})`)
     }

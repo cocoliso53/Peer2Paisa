@@ -191,10 +191,10 @@ const applyFsmEvent = async (
         ? await persistGeneratedMessageIds(nextState, effectResponse)
         : nextState
 
-    await updateOrder(stateToPersist)
+    const persistedState = await updateOrder(stateToPersist)
 
     return {
-        state: stateToPersist,
+        state: persistedState,
         effects,
         effectResponse,
     }

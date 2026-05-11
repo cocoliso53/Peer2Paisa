@@ -13,13 +13,23 @@ import { EscrowFactoryAbi } from './abi/EscrowFactory'
 import { SwapEscrowAbi } from './abi/SwapEscrowAbi'
 import { QuoterAbi } from './abi/QuoterAbi'
 
-const privateKey = process.env.PRIVATE_KEY
-const alchemyURL = process.env.ALCHEMY_URL 
-const factoryAddress = process.env.FACTORY_ADDRESS
+const getRequiredEnv = (name: string): string => {
+    const value = process.env[name]
+
+    if (!value) {
+        throw new Error(`Missing required environment variable: ${name}`)
+    }
+
+    return value
+}
+
+const privateKey = getRequiredEnv('PRIVATE_KEY')
+const alchemyURL = getRequiredEnv('ALCHEMY_URL')
+const factoryAddress = getRequiredEnv('FACTORY_ADDRESS')
+const tokenAddress = getRequiredEnv('TOKEN_ADDRESS') as Address
 const QUOTER_ADDR = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6" as Address
 const SLIPPAGE_BPS  = 50
 const selectedChain = base
-const tokenAddress = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as Address
 
 
 const account = privateKeyToAccount(privateKey as `0x${string}`)
