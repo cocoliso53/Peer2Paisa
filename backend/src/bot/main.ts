@@ -210,15 +210,10 @@ const resolveAsyncWorkflowEffects = async (
 
     while (true) {
         if (currentEffects.lockQuote) {
+            let quote: ReturnType<typeof lockMockQuote>
+
             try {
-                const quote = lockMockQuote(currentEffects.lockQuote)
-                const result = await applyFsmEvent(ctx, currentState, {
-                    event: 'quoteLocked',
-                    data: quote,
-                })
-                currentState = result.state
-                currentEffects = result.effects
-                continue
+                quote = lockMockQuote(currentEffects.lockQuote)
             } catch (error) {
                 const result = await applyFsmEvent(ctx, currentState, {
                     event: 'quoteLockFailed',
@@ -227,14 +222,22 @@ const resolveAsyncWorkflowEffects = async (
                 currentEffects = result.effects
                 continue
             }
-        }
 
-        if (currentEffects.createEscrow) {
             let escrowAddress: string | undefined
 
             try {
-                const { buyerAddress, sellerAddress, amount } = currentEffects.createEscrow
-                escrowAddress = await createEscrowFromBot(sellerAddress, buyerAddress, amount)
+                const sellerAddress = currentState.seller?.address
+                const buyerAddress = currentState.buyer?.address
+
+                if (!sellerAddress || !buyerAddress) {
+                    throw new Error('Missing buyer or seller address for escrow creation')
+                }
+
+                escrowAddress = await createEscrowFromBot(
+                    sellerAddress,
+                    buyerAddress,
+                    quote.lockedTokenAmount,
+                )
             } catch (error) {
                 console.error('Unable to create escrow', error)
             }
@@ -245,6 +248,7 @@ const resolveAsyncWorkflowEffects = async (
                     data: {
                         escrow: escrowAddress,
                         escrowUrl: `${explorerBaseURL}/address/${escrowAddress}`,
+                        ...quote,
                     },
                 })
                 : await applyFsmEvent(ctx, currentState, {

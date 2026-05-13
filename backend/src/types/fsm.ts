@@ -168,10 +168,14 @@ export type FsmEvent =
         }
     }
     | {
-        event: 'setEscrowAddress' | 'escrowCreated'
+        event: 'escrowCreated'
         data: {
             escrow: string
             escrowUrl: string
+            marketRate: string
+            lockedRate: string
+            lockedFiatAmount: string
+            lockedTokenAmount: string
         }
     }
     | {

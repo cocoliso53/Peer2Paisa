@@ -21,7 +21,11 @@
                           :lockedTokenAmount "250.500000"}})
 (def escrow-created-event {:event "escrowCreated"
                            :data  {:escrow "0xescrow"
-                                   :escrowUrl "https://basescan.org/address/0xescrow"}})
+                                   :escrowUrl "https://basescan.org/address/0xescrow"
+                                   :marketRate "18.00"
+                                   :lockedRate "18.45"
+                                   :lockedFiatAmount "4621.72"
+                                   :lockedTokenAmount "250.500000"}})
 
 (defn transit-events
   [init-state events]
@@ -65,23 +69,21 @@
     {:event "setAmountCounterpart"
      :data  {:text selected-amount}}]))
 
-(defn waiting-funding-state
+(defn counterpart-address-state
   [side amount premium]
   (transit-events
    (taken-order-state side amount premium)
    [{:event "setCounterpartAddress"
      :data  {:counterpart taker-user}}]))
 
-(defn quoted-state
+(defn waiting-funding-state
   [side amount premium]
-  (core/delta (waiting-funding-state side amount premium) quote-event))
+  (core/delta (counterpart-address-state side amount premium) escrow-created-event))
 
 (defn waiting-release-state
   [side amount premium]
   (core/delta
-   (transit-events
-    (quoted-state side amount premium)
-    [escrow-created-event])
+   (waiting-funding-state side amount premium)
    {:event "escrowFunded"}))
 
 (deftest s0-transitions
@@ -407,14 +409,14 @@
                                               :chatId   56789
                                               :address  "0x999999"}}}]
     (testing "valid counterpart addresses request a quote lock"
-      (is (= "waitingFunding" (:state (core/delta sell-state direct-event))))
+      (is (= "watingCounterpartAddress" (:state (core/delta sell-state direct-event))))
       (is (= {:lockQuote {:amount "100"
                           :premiumPct "2.5"
                           :sell true
                           :makerDenomination "USDC"
                           :asset "USDC"}}
              (core/omega sell-state direct-event)))
-      (is (= "waitingFunding" (:state (core/delta buy-state text-event))))
+      (is (= "watingCounterpartAddress" (:state (core/delta buy-state text-event))))
       (is (= {:lockQuote {:amount "1800"
                           :premiumPct "-1"
                           :sell false
@@ -445,29 +447,28 @@
                                      :data  {:username username}}))))))
 
 (deftest waiting-funding-transitions
-  (let [sell-state (waiting-funding-state "sell" "100" "2.5")
-        buy-state (waiting-funding-state "buy" "1800" "-1")
-        quoted-sell-state (quoted-state "sell" "100" "2.5")
-        quoted-buy-state (quoted-state "buy" "1800" "-1")
-        with-escrow-state (core/delta quoted-sell-state escrow-created-event)
+  (let [pre-funding-sell-state (counterpart-address-state "sell" "100" "2.5")
+        pre-funding-buy-state (counterpart-address-state "buy" "1800" "-1")
+        with-escrow-state (waiting-funding-state "sell" "100" "2.5")
+        buy-with-escrow-state (waiting-funding-state "buy" "1800" "-1")
         no-seller-chat-state (assoc with-escrow-state :seller {:username "username"
                                                                :address  "0x987654"})]
-    (testing "quote lock success and failure stay in waitingFunding"
-      (is (= "waitingFunding" (:state (core/delta sell-state quote-event))))
-      (is (= {:createEscrow {:buyerAddress "0x123456"
-                             :sellerAddress "0x987654"
-                             :amount "250.500000"}}
-             (core/omega sell-state quote-event)))
-      (is (= sell-state
-             (core/delta sell-state {:event "quoteLockFailed"})))
+    (testing "quote and escrow failures stay before waitingFunding"
+      (is (= "watingCounterpartAddress" (:state pre-funding-sell-state)))
+      (is (= pre-funding-sell-state
+             (core/delta pre-funding-sell-state {:event "quoteLockFailed"})))
       (is (= {:reply ["Unable to lock the quote right now. Please try again later."]}
-             (core/omega sell-state {:event "quoteLockFailed"}))))
-    (testing "escrow creation aliases send the same funding instructions"
+             (core/omega pre-funding-sell-state {:event "quoteLockFailed"})))
+      (is (= pre-funding-sell-state
+             (core/delta pre-funding-sell-state {:event "escrowCreationFailed"})))
+      (is (= {:reply ["Sorry, we couldn't create the escrow contract. Please contact support."]}
+             (core/omega pre-funding-sell-state {:event "escrowCreationFailed"}))))
+    (testing "escrow creation stores quote data and advances to waitingFunding"
+      (is (= "waitingFunding" (:state with-escrow-state)))
       (is (= "0xescrow" (:escrowAddress with-escrow-state)))
-      (is (= with-escrow-state
-             (core/delta quoted-sell-state {:event "setEscrowAddress"
-                                            :data  {:escrow "0xescrow"
-                                                    :escrowUrl "https://basescan.org/address/0xescrow"}})))
+      (is (= "18.45" (:lockedRate with-escrow-state)))
+      (is (= "4621.72" (:lockedFiatAmount with-escrow-state)))
+      (is (= "250.500000" (:lockedTokenAmount with-escrow-state)))
       (is (= {:sendMessage [{:chatId 56789
                              :parseMode "Markdown"
                              :text "Escrow created, click [here](https://basescan.org/address/0xescrow) to see the details. Locked rate: 18.45 MXN/USDC. Seller deposits 250.500000 USDC. Buyer pays 4621.72 MXN. Waiting for seller to fund escrow contract"}
@@ -476,12 +477,8 @@
                              :text "Escrow created, click [here](https://basescan.org/address/0xescrow) to see the details. Locked rate: 18.45 MXN/USDC. Seller deposits 250.500000 USDC. Buyer pays 4621.72 MXN. Deposit 250.500000 USDC and then type /funded to continue"}
                             {:chatId 987654
                              :text "0xescrow"}]}
-             (core/omega quoted-sell-state escrow-created-event))))
+             (core/omega pre-funding-sell-state escrow-created-event))))
     (testing "escrow creation failures and funding failures reply appropriately"
-      (is (= quoted-sell-state
-             (core/delta quoted-sell-state {:event "escrowCreationFailed"})))
-      (is (= {:reply ["Sorry, we couldn't create the escrow contract. Please contact support."]}
-             (core/omega quoted-sell-state {:event "escrowCreationFailed"})))
       (is (= with-escrow-state
              (core/delta with-escrow-state {:event "escrowFundingFailed"})))
       (is (= {:sendMessage [{:chatId 987654
@@ -502,7 +499,7 @@
                              :text "Escrow funded succesfully. Contact @username to agree on fiat transfer details. Type /release ONLY after you have confirmed the reception of funds"}
                             {:chatId 987654
                              :text "Seller has funded the escrow account. Contact @counterpart to agree on fiat transfer details"}]}
-             (core/omega (core/delta quoted-buy-state escrow-created-event) {:event "escrowFunded"}))))
+             (core/omega buy-with-escrow-state {:event "escrowFunded"}))))
     (testing "cancel while waiting funding requests an escrow refund when available"
       (let [state-with-escrow (assoc with-escrow-state :escrowAddress "0xescrow")]
         (is (= "canceled" (:state (core/delta state-with-escrow {:event "cancel"

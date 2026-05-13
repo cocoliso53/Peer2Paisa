@@ -178,6 +178,16 @@
   [state {{escrow :escrow} :data}]
   (assoc state :escrowAddress escrow))
 
+(defn set-escrow-and-locked-quote
+  [state {{:keys [escrow marketRate lockedRate lockedFiatAmount lockedTokenAmount]} :data}]
+  (-> state
+      (assoc :escrowAddress escrow
+             :marketRate marketRate
+             :lockedRate lockedRate
+             :lockedFiatAmount lockedFiatAmount
+             :lockedTokenAmount lockedTokenAmount)
+      (dissoc :error)))
+
 (defn set-locked-quote
   [state {{:keys [marketRate lockedRate lockedFiatAmount lockedTokenAmount]} :data}]
   (-> state
@@ -323,19 +333,20 @@
     {:reply ["Invalid address, please try again"]}))
 
 (defn set-escrow-address-effect
-  [{:keys [buyer seller asset lockedTokenAmount] :as state} {{:keys [escrow escrowUrl]} :data}]
+  [{:keys [buyer seller asset] :as state} {{:keys [escrow escrowUrl lockedTokenAmount]} :data :as event}]
   (let [escrow-url-text (str "Escrow created, click [here]("
                              escrowUrl
-                             ") to see the details. ")]
+                             ") to see the details. ")
+        display-state   (merge state (:data event))]
     {:sendMessage [{:chatId    (:chatId buyer)
                     :parseMode "Markdown"
                     :text      (str escrow-url-text
-                                    (locked-trade-summary state)
+                                    (locked-trade-summary display-state)
                                     "Waiting for seller to fund escrow contract")}
                    {:chatId    (:chatId seller)
                     :parseMode "Markdown"
                     :text      (str escrow-url-text
-                                    (locked-trade-summary state)
+                                    (locked-trade-summary display-state)
                                     "Deposit "
                                     lockedTokenAmount
                                     " "
@@ -513,36 +524,28 @@
    ["watingCounterpartAddress"
     "setCounterpartAddress"] {:transition set-counterpart-address
                               :effects    set-counterpart-address-effect
-                              :to         "waitingFunding"}
+                              :to         "watingCounterpartAddress"}
    ["watingCounterpartAddress"
     "textInput"]             {:transition set-counterpart-address-from-text
                               :effects    effect-text-set-counterpart-address
-                              :to         "waitingFunding"}
+                              :to         "watingCounterpartAddress"}
    ["watingCounterpartAddress"
     "cancel"]                {:transition cancel-order
                               :effects    effect-counterpart-cancel
                               :to         "canceled"}
-   
-   ["waitingFunding"
-    "quoteLocked"]      {:transition set-locked-quote
-                         :effects    quote-locked-effect
-                         :to         "waitingFunding"}
-   ["waitingFunding"
+   ["watingCounterpartAddress"
     "quoteLockFailed"]  {:transition identity
                          :effects    quote-lock-failed-effect
-                         :to         "waitingFunding"}
-   ["waitingFunding"
-    "setEscrowAddress"] {:transition set-escrow-address
+                         :to         "watingCounterpartAddress"}
+   ["watingCounterpartAddress"
+    "escrowCreated"]    {:transition set-escrow-and-locked-quote
                          :effects    set-escrow-address-effect
                          :to         "waitingFunding"}
-   ["waitingFunding"
-    "escrowCreated"]    {:transition set-escrow-address
-                         :effects    set-escrow-address-effect
-                         :to         "waitingFunding"}
-   ["waitingFunding"
+   ["watingCounterpartAddress"
     "escrowCreationFailed"] {:transition identity
                              :effects    escrow-creation-failed-effect
-                             :to         "waitingFunding"}
+                             :to         "watingCounterpartAddress"}
+   
    ["waitingFunding"
     "cancel"]           {:transition cancel-order
                          :effects    effect-counterpart-cancel
