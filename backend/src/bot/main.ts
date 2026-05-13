@@ -268,6 +268,13 @@ const channelId = Number(process.env.TELEGRAM_CHANNEL)
 const bot = new Telegraf(process.env.TELEGRAM_BOT!);
 const orderbook = process.env.ORDERBOOK_LINK
 
+const telegramCommands = [
+    { command: 'create', description: 'Create a buy or sell order' },
+    { command: 'funded', description: 'Mark escrow as funded' },
+    { command: 'release', description: 'Release escrowed USDC' },
+    { command: 'cancel', description: 'Cancel your active order' },
+    { command: 'help', description: 'Show available commands' },
+]
 
 bot.start(async ctx => {
     if (!ctx.from.username) {
@@ -275,7 +282,7 @@ bot.start(async ctx => {
         return;
     }
 
-    await ctx.reply(`Welcome, use this bot to place and configure your orders. subscribe to ${orderbook} to see all active orders`);
+    await ctx.reply(`Welcome. Use this bot to place and configure P2P USDC/MXN orders. Subscribe to ${orderbook} to see all active orders.`);
 });
 
 bot.command('create', async ctx => {
@@ -403,7 +410,7 @@ bot.command('release', async ctx => {
 });
 
 bot.command('help', async ctx => {
-    await ctx.reply("Please contact @cuaucortes for assistance")
+    await ctx.reply("Use the Telegram command menu to see available actions. For assistance, contact @cuaucortes")
 })
 
 bot.command('cancel', async ctx => {
@@ -556,6 +563,11 @@ bot.on('channel_post', ctx => {
   console.log('Channel ID:', ctx.channelPost.chat.id);
 });
 
+
+bot.telegram.setMyCommands(telegramCommands)
+    .catch(error => {
+        console.warn('Unable to register Telegram commands', error);
+    })
 
 bot.launch()
 
